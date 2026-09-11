@@ -33,6 +33,18 @@ export const auth = betterAuth({
     expiresIn: 60 * 60 * 24 * 30, // 30 days
     updateAge: 60 * 60 * 24, // refresh the expiry at most once a day
   },
+  /**
+   * Better Auth rate limits by IP, but only when `NODE_ENV=production`, and it
+   * caps `/sign-in` and `/sign-up` at 3 requests per 10 seconds. That asymmetry
+   * is worth knowing about: it is invisible under `pnpm dev` and very visible
+   * the first time a real user mistypes a password three times.
+   *
+   * The end-to-end suite runs a production build and signs in many times from
+   * one address, so it opts out through the environment. Nothing else should.
+   */
+  rateLimit: {
+    enabled: env.DISABLE_AUTH_RATE_LIMIT ? false : undefined,
+  },
   /** Lets Better Auth set cookies from server actions and route handlers. */
   plugins: [nextCookies()],
 });

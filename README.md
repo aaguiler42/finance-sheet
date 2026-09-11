@@ -47,7 +47,11 @@ credentials are prefilled.
 | `pnpm auth:generate`  | Regenerate the Better Auth Drizzle schema              |
 | `pnpm check[:fix]`    | Biome lint + format                                    |
 | `pnpm typecheck`      | `tsc --noEmit`                                         |
-| `pnpm test`           | Vitest                                                 |
+| `pnpm test`           | Vitest: unit + integration                             |
+| `pnpm test:unit`      | Only the hermetic tests (no database)                  |
+| `pnpm test:integration` | Only the database-backed tests                       |
+| `pnpm test:e2e`       | Playwright browser tests                               |
+| `pnpm db:test`        | Create / migrate the `_test` database by hand          |
 
 ## Layout
 
@@ -73,6 +77,34 @@ src/
 ├── trpc/                   # client provider, RSC caller, query client
 └── env.ts                  # Zod-validated environment
 ```
+
+## Testing
+
+Three layers, each testing what the one below it cannot:
+
+| Layer         | Where                            | Needs                     |
+| ------------- | -------------------------------- | ------------------------- |
+| Unit          | `src/**/*.test.ts`               | nothing                   |
+| Integration   | `src/**/*.integration.test.ts`   | `pnpm db:up`              |
+| End-to-end    | `e2e/*.spec.ts`                  | `pnpm db:up`              |
+
+```bash
+pnpm test        # unit + integration
+pnpm test:e2e    # browser
+```
+
+Unit tests hand-build a tRPC context and never open a connection. Integration
+tests drive the real Better Auth and Drizzle against Postgres. End-to-end tests
+drive a real browser through the login form and the dashboard.
+
+Both database-backed layers use a **separate `finance_sheet_test` database**,
+created and migrated automatically on first run, so tests never touch the data
+you browse locally. Drop it whenever you like; it is rebuilt on the next run.
+
+The E2E suite builds and serves the app itself on port 3100, so it does not
+collide with `pnpm dev` on 3000. That build runs in production mode, which means
+it exercises two behaviours `pnpm dev` never shows you: Better Auth's rate
+limiter (see `DISABLE_AUTH_RATE_LIMIT`) and minified React's hydration errors.
 
 ## How to add a feature
 

@@ -10,8 +10,19 @@ export default async function DashboardPage() {
   // Seam 1: direct in-process call from a Server Component. No HTTP hop.
   const me = await api.health.me();
 
-  // Seam 2: prefetch on the server, hand the cache to a client component below.
-  void getQueryClient().prefetchQuery(trpc.health.db.queryOptions());
+  /**
+   * Seam 2: prefetch on the server, hand the cache to a client component below.
+   *
+   * Awaited, not fire-and-forget. `DbPing` reads this with a plain `useQuery`,
+   * which never suspends, so the query has to be settled before `dehydrate`
+   * runs - otherwise the client hydrates from a still-pending cache entry and
+   * re-renders the loading text over server HTML that already streamed in the
+   * timestamp, which React rejects as a hydration mismatch (error #418).
+   *
+   * The fire-and-forget `void` form is for `useSuspenseQuery` inside a
+   * `<Suspense>` boundary, where the pending state is the point.
+   */
+  await getQueryClient().prefetchQuery(trpc.health.db.queryOptions());
 
   return (
     <main className="flex flex-1 flex-col gap-6 p-6">

@@ -17,6 +17,12 @@ export const env = createEnv({
       .string()
       .min(32, "BETTER_AUTH_SECRET must be at least 32 characters"),
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+    /**
+     * Escape hatch for the end-to-end suite, which runs a production build and
+     * therefore hits Better Auth's production-only rate limiter. Never set this
+     * on a deployed environment - see the `rateLimit` note in `server/auth`.
+     */
+    DISABLE_AUTH_RATE_LIMIT: z.stringbool().default(false),
   },
   client: {
     NEXT_PUBLIC_APP_URL: z.url(),
@@ -25,6 +31,7 @@ export const env = createEnv({
     DATABASE_URL: process.env.DATABASE_URL,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     NODE_ENV: process.env.NODE_ENV,
+    DISABLE_AUTH_RATE_LIMIT: process.env.DISABLE_AUTH_RATE_LIMIT,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
   },
   /** Lets `pnpm build` run in CI/Docker without a real database. */
