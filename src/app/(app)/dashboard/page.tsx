@@ -1,59 +1,107 @@
-import { HydrateClient } from "@/trpc/hydrate-client";
-import { api, getQueryClient, trpc } from "@/trpc/server";
-import { DbPing } from "./db-ping";
+import Link from "next/link";
+
+import { NetWorthChart } from "@/app/(app)/_components/net-worth-chart";
+import { Empty, Panel, panel } from "@/app/(app)/_components/ui";
+import { formatIsoDate } from "@/lib/dates";
+import { formatBase, formatMoney } from "@/lib/money";
+import { api } from "@/trpc/server";
 
 /**
- * Exercises every seam in the stack, so a broken wire shows up here rather than
- * in your first real feature. Replace this page when you start building.
+ * One screen that answers "how am I doing?": what everything is worth now, how
+ * that has moved, what is held in which currency, and what has come in lately.
  */
 export default async function DashboardPage() {
-  // Seam 1: direct in-process call from a Server Component. No HTTP hop.
-  const me = await api.health.me();
+  const [preferences, netWorth, series, breakdown, recent, wallets] = await Promise.all([
+    api.preferences.get(),
+    api.wallets.netWorth(),
+    api.wallets.netWorthSeries(),
+    api.wallets.currencyBreakdown(),
+    api.income.recent({ limit: 5 }),
+    api.wallets.list(),
+  ]);
 
-  /**
-   * Seam 2: prefetch on the server, hand the cache to a client component below.
-   *
-   * Awaited, not fire-and-forget. `DbPing` reads this with a plain `useQuery`,
-   * which never suspends, so the query has to be settled before `dehydrate`
-   * runs - otherwise the client hydrates from a still-pending cache entry and
-   * re-renders the loading text over server HTML that already streamed in the
-   * timestamp, which React rejects as a hydration mismatch (error #418).
-   *
-   * The fire-and-forget `void` form is for `useSuspenseQuery` inside a
-   * `<Suspense>` boundary, where the pending state is the point.
-   */
-  await getQueryClient().prefetchQuery(trpc.health.db.queryOptions());
+  const { displayCurrency } = preferences;
 
   return (
     <main className="flex flex-1 flex-col gap-6 p-6">
-      <section>
-        <h1 className="text-xl font-semibold">Dashboard</h1>
+      <section className={panel} aria-labelledby="net-worth">
+        <h1 id="net-worth" className="text-sm font-medium opacity-60">
+          Net worth
+        </h1>
+        <p className="mt-1 text-4xl font-semibold tabular-nums">
+          {formatBase(netWorth.amount, displayCurrency)}
+        </p>
         <p className="mt-1 text-sm opacity-60">
-          Everything below is proof the boilerplate works end to end.
+          As at {formatIsoDate(netWorth.date)}, from the latest value recorded for each
+          wallet.
         </p>
       </section>
 
-      <section className="rounded-lg border border-black/10 p-4 dark:border-white/15">
-        <h2 className="text-sm font-medium">Server Component &rarr; tRPC caller</h2>
-        <p className="mt-2 text-sm opacity-70">
-          <code>health.me</code> is a <code>protectedProcedure</code>, so reaching it at
-          all proves the session resolved.
-        </p>
-        <dl className="mt-3 grid grid-cols-[8rem_1fr] gap-1 text-sm">
-          <dt className="opacity-60">User id</dt>
-          <dd className="font-mono text-xs">{me.id}</dd>
-          <dt className="opacity-60">Name</dt>
-          <dd>{me.name}</dd>
-          <dt className="opacity-60">Email</dt>
-          <dd>{me.email}</dd>
-          <dt className="opacity-60">Session expires</dt>
-          <dd>{me.sessionExpiresAt.toLocaleString()}</dd>
-        </dl>
-      </section>
+      {wallets.length === 0 && (
+        <section className={panel}>
+          <p className="text-sm">
+            Nothing is being tracked yet.{" "}
+            <Link href="/wallets" className="underline">
+              Add a wallet
+            </Link>{" "}
+            and tell the app what it is worth.
+          </p>
+        </section>
+      )}
 
-      <HydrateClient>
-        <DbPing />
-      </HydrateClient>
+      <Panel title="Over time" description="One point for each day you recorded a value.">
+        <NetWorthChart points={series} displayCurrency={displayCurrency} />
+      </Panel>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Panel
+          title="Held by currency"
+          description="Before any conversion, so you can see what is actually where."
+        >
+          {breakdown.length === 0 ? (
+            <Empty>No wallet has been valued yet.</Empty>
+          ) : (
+            <dl className="grid grid-cols-[4rem_1fr] gap-y-1 text-sm">
+              {breakdown.map((entry) => (
+                <div key={entry.currency} className="contents">
+                  <dt className="opacity-60">{entry.currency}</dt>
+                  <dd className="tabular-nums">
+                    {formatMoney(entry.amount, entry.currency)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </Panel>
+
+        <Panel
+          title="Recent income"
+          description="Records of what you earned. They change no wallet."
+          actions={
+            <Link href="/income" className="text-sm underline opacity-70">
+              All income
+            </Link>
+          }
+        >
+          {recent.length === 0 ? (
+            <Empty>Nothing recorded yet.</Empty>
+          ) : (
+            <ul className="flex flex-col gap-2 text-sm">
+              {recent.map((entry) => (
+                <li key={entry.id} className="flex items-baseline justify-between gap-4">
+                  <span>
+                    <span className="opacity-60">{formatIsoDate(entry.date)}</span>{" "}
+                    {entry.categoryName}
+                  </span>
+                  <span className="tabular-nums">
+                    {formatMoney(entry.amount, entry.currency)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
     </main>
   );
 }

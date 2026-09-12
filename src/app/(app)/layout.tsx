@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/server/auth";
@@ -18,8 +19,16 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
 
   return (
     <div className="flex flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-black/10 px-6 py-3 dark:border-white/15">
-        <span className="font-semibold">Finance Sheet</span>
+      <header className="flex items-center justify-between gap-6 border-b border-black/10 px-6 py-3 dark:border-white/15">
+        <div className="flex items-center gap-6">
+          <span className="font-semibold">Finance Sheet</span>
+          <nav className="flex items-center gap-4 text-sm">
+            <Link href="/dashboard">Dashboard</Link>
+            <Link href="/wallets">Wallets</Link>
+            <Link href="/income">Income</Link>
+            <Link href="/settings">Settings</Link>
+          </nav>
+        </div>
         <div className="flex items-center gap-4 text-sm">
           <span className="opacity-70">{session.user.email}</span>
           <SignOutButton />

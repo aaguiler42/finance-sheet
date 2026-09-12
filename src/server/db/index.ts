@@ -17,4 +17,10 @@ if (env.NODE_ENV !== "production") globalForDb.pool = pool;
 export const db = drizzle(pool, { schema, casing: "snake_case" });
 
 export type Db = typeof db;
+
+/**
+ * Anything a query can run against: the pool, or a transaction handle. Helpers
+ * that are called both on their own and inside `db.transaction` take this.
+ */
+export type Queryable = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 export { schema };

@@ -1,7 +1,9 @@
 # finance-sheet
 
-Personal finance web app. This repo is currently **boilerplate only** — the stack
-is wired end to end and proven, but there is no domain model yet.
+Personal finance web app built around a deliberate refusal: it does not derive
+what you own from what you earn and spend. You tell it what your wallets are
+worth; it remembers, converts, and charts. See `CONTEXT.md` for the vocabulary
+and `docs/adr/` for the two decisions everything else follows from.
 
 ## Stack
 
@@ -59,12 +61,20 @@ credentials are prefilled.
 src/
 ├── app/
 │   ├── (app)/              # authenticated routes; layout redirects to /login
-│   │   └── dashboard/
+│   │   ├── dashboard/      # net worth, trend, recent income
+│   │   ├── wallets/        # list, bulk update, and [id] history
+│   │   ├── income/         # list, filters, add, paste import
+│   │   └── settings/       # display currency, category tree
 │   ├── (auth)/login/
 │   └── api/
 │       ├── auth/[...all]/  # Better Auth
 │       └── trpc/[trpc]/    # tRPC over HTTP (browser client only)
-├── lib/auth-client.ts      # browser-side auth
+├── lib/                    # the pure domain modules, and browser-side auth
+│   ├── money.ts            # minor units, the rate constant, parsing, formatting
+│   ├── net-worth.ts        # what the wallets add up to, now or at any date
+│   ├── category-tree.ts    # flat rows to a two-level tree with rollups
+│   ├── paste-parser.ts     # pasted spreadsheet text to income rows
+│   └── dates.ts            # calendar days as YYYY-MM-DD strings
 ├── server/
 │   ├── api/
 │   │   ├── trpc.ts         # context, publicProcedure, protectedProcedure
@@ -110,12 +120,14 @@ limiter (see `DISABLE_AUTH_RATE_LIMIT`) and minified React's hydration errors.
 
 1. Add `src/server/db/schema/<feature>.ts` and re-export it from `schema/index.ts`.
 2. `pnpm db:generate && pnpm db:migrate`.
-3. Add `src/server/api/routers/<feature>.ts` and mount it in `root.ts`.
-4. Read it from a Server Component via `api.<feature>.<proc>()`, or from a client
-   component via `useTRPC()` + `useQuery`.
+3. Add `src/server/api/routers/<feature>.ts` and mount it in `root.ts`. Filter
+   every query by `ctx.user.id`; never take ownership from the input.
+4. Read it from a Server Component via `api.<feature>.<proc>()`. Mutations go in
+   a client component via `useTRPC()` + `useMutation`, followed by
+   `router.refresh()` to re-render the server component that displays the result.
 
-`src/server/api/routers/health.ts` and `/dashboard` exist purely to prove the
-wiring works. Delete both once you have real features.
+Logic worth testing belongs in a pure module under `src/lib`, not in a router or
+a page — those are wiring.
 
 ## Notes
 
@@ -127,6 +139,12 @@ wiring works. Delete both once you have real features.
   `protectedProcedure` rejects. Neither relies on the other.
 - **No email transport is configured**, so `requireEmailVerification` is off.
   Turn it on in `src/server/auth/index.ts` once sending works.
+- **Money is integer minor units everywhere**, never a float, and the EUR/USD
+  rate is stamped onto each row as it is written rather than applied on read.
+  The rate column is not redundant; see `docs/adr/0002`.
+- **Archiving never affects a calculation.** It hides a wallet or a category
+  from today's lists. Excluding archived rows from net worth would rewrite the
+  past, which is the one thing this app exists not to do.
 - **Route protection does not use `proxy.ts`** (Next 16's replacement for
   `middleware.ts`). The layout check is authoritative and runs per request; add a
   proxy only if you want to avoid rendering work for signed-out visitors.

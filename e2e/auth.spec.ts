@@ -84,9 +84,8 @@ test.describe("sign in", () => {
     await page.getByRole("button", { name: "Sign in" }).click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Net worth" })).toBeVisible();
     // The header reads the session server-side, so this proves the cookie stuck.
-    // Scoped to the banner: the email also appears in the dashboard's own table.
     await expect(page.getByRole("banner").getByText(DEV_EMAIL)).toBeVisible();
   });
 });
@@ -113,7 +112,7 @@ test.describe("sign up", () => {
 
     await expect(page).toHaveURL(/\/dashboard$/);
     await expect(page.getByRole("banner").getByText(email)).toBeVisible();
-    await expect(page.getByRole("main").getByText("New User")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Net worth" })).toBeVisible();
   });
 
   test("refuses an email that is already registered", async ({ page }) => {

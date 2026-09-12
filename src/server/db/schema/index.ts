@@ -6,3 +6,6 @@
  * Add one line per schema module as the app grows.
  */
 export * from "./auth";
+export * from "./income";
+export * from "./preferences";
+export * from "./wallets";
