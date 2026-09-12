@@ -16,6 +16,28 @@ const credentials = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+/**
+ * Prefilled sign-in values. They come from the environment rather than being
+ * written here, so that no credential literal exists in the client source or
+ * the bundle it compiles to - unset means the fields render empty.
+ *
+ * An earlier version gated hard-coded literals behind a boolean flag. That is
+ * not enough: Turbopack only substitutes `NEXT_PUBLIC_*` references that are
+ * defined at build time, so on a deployment - where the flag is absent - the
+ * reference stayed a runtime lookup, both branches of the ternary survived, and
+ * the password shipped to every visitor inside the JS despite the rendered form
+ * looking empty. Keeping the values themselves in the environment removes the
+ * question. Verify after a build with:
+ *
+ *     grep -r "$NEXT_PUBLIC_DEV_PASSWORD" .next/static
+ */
+const prefill = {
+  email: process.env.NEXT_PUBLIC_DEV_EMAIL ?? "",
+  password: process.env.NEXT_PUBLIC_DEV_PASSWORD ?? "",
+};
+
+const DEV_CREDENTIALS = prefill.email !== "";
+
 export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -84,7 +106,7 @@ export default function LoginPage() {
               name="email"
               type="email"
               autoComplete="email"
-              defaultValue="dev@example.com"
+              defaultValue={prefill.email}
               className="rounded-md border border-black/15 bg-transparent px-3 py-2 dark:border-white/20"
             />
           </label>
@@ -95,7 +117,7 @@ export default function LoginPage() {
               name="password"
               type="password"
               autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
-              defaultValue="password123"
+              defaultValue={prefill.password}
               className="rounded-md border border-black/15 bg-transparent px-3 py-2 dark:border-white/20"
             />
           </label>
@@ -128,9 +150,11 @@ export default function LoginPage() {
             : "Already have an account? Sign in"}
         </button>
 
-        <p className="mt-6 text-xs opacity-50">
-          Dev credentials are prefilled. Run <code>pnpm db:seed</code> to create them.
-        </p>
+        {DEV_CREDENTIALS && (
+          <p className="mt-6 text-xs opacity-50">
+            Dev credentials are prefilled. Run <code>pnpm db:seed</code> to create them.
+          </p>
+        )}
       </div>
     </main>
   );

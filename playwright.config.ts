@@ -61,6 +61,9 @@ export default defineConfig({
        * only 3 sign-ins per 10 seconds per IP - every test here comes from one.
        */
       DISABLE_AUTH_RATE_LIMIT: "true",
+      /** The suite signs in as the seeded user, so it wants the prefill on. */
+      NEXT_PUBLIC_DEV_EMAIL: "dev@example.com",
+      NEXT_PUBLIC_DEV_PASSWORD: "password123",
     },
     /** Long enough to cover a cold build on a slow machine. */
     timeout: 180_000,

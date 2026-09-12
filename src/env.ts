@@ -26,6 +26,15 @@ export const env = createEnv({
   },
   client: {
     NEXT_PUBLIC_APP_URL: z.url(),
+    /**
+     * Prefill for the `/login` form. Convenient locally and relied on by the
+     * end-to-end suite, which signs in as the seeded user. The values live in
+     * the environment rather than in the component so that a deployment, which
+     * leaves them unset, has no credential literal in its client bundle at all
+     * - see the note in the login page. Never set these on a deployment.
+     */
+    NEXT_PUBLIC_DEV_EMAIL: z.string().optional(),
+    NEXT_PUBLIC_DEV_PASSWORD: z.string().optional(),
   },
   runtimeEnv: {
     DATABASE_URL: process.env.DATABASE_URL,
@@ -33,6 +42,8 @@ export const env = createEnv({
     NODE_ENV: process.env.NODE_ENV,
     DISABLE_AUTH_RATE_LIMIT: process.env.DISABLE_AUTH_RATE_LIMIT,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    NEXT_PUBLIC_DEV_EMAIL: process.env.NEXT_PUBLIC_DEV_EMAIL,
+    NEXT_PUBLIC_DEV_PASSWORD: process.env.NEXT_PUBLIC_DEV_PASSWORD,
   },
   /** Lets `pnpm build` run in CI/Docker without a real database. */
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
