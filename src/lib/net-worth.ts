@@ -16,7 +16,7 @@
  * calculation that is all of them.
  */
 
-import type { IsoDate } from "./dates";
+import { addMonths, endOfMonth, type IsoDate } from "./dates";
 import { toBase } from "./money";
 
 export type WalletKind = "asset" | "liability";
@@ -137,30 +137,107 @@ export function netWorthSeries(
   });
 }
 
+/** How many month-ends a card sparkline and the detail chart both plot. */
+export const MONTHS_PLOTTED = 12;
+
 /**
- * The dates worth plotting: every date something was recorded, plus `upTo` so
- * the line runs to the present rather than stopping at the last entry.
+ * The month-end dates a chart runs over: `months` of them, ending at the end
+ * of the month `upTo` falls in.
  */
-export function seriesDates(
-  snapshots: readonly FrozenSnapshot[],
-  options: { from?: IsoDate; to?: IsoDate; upTo?: IsoDate } = {},
-): IsoDate[] {
-  const { from, to, upTo } = options;
-  const dates = new Set<IsoDate>();
-
-  for (const snapshot of snapshots) {
-    if (from && snapshot.date < from) continue;
-    if (to && snapshot.date > to) continue;
-    dates.add(snapshot.date);
+export function monthEndDates(upTo: IsoDate, months = MONTHS_PLOTTED): IsoDate[] {
+  const last = endOfMonth(upTo);
+  const dates: IsoDate[] = [];
+  for (let back = months - 1; back >= 0; back -= 1) {
+    dates.push(endOfMonth(addMonths(last, -back)));
   }
+  return dates;
+}
 
-  // A wallet valued before the window still holds that value inside it, so the
-  // window needs a point at its own start to show it.
-  if (from && snapshots.some((snapshot) => snapshot.date < from)) dates.add(from);
+/**
+ * What `wallets` were worth at each of the last `months` month-ends, in
+ * base-currency minor units.
+ *
+ * Every chart in the app is built on this, so a card's sparkline and the
+ * dashboard's line cannot tell different stories about the same wallet. Holding
+ * a stated value forward until the user states another is not inventing a
+ * reading - it is the rule the whole app runs on. What it will not do is plot a
+ * gap as zero: month-ends before the first Snapshot are left out entirely, so a
+ * wallet valued once draws a flat line from that month rather than a cliff up
+ * from the axis, and a wallet never valued draws nothing at all.
+ */
+export function monthEndSeries(
+  wallets: readonly ValuedWallet[],
+  snapshots: readonly FrozenSnapshot[],
+  options: { upTo: IsoDate; months?: number },
+): SeriesPoint[] {
+  const dates = monthEndDates(options.upTo, options.months ?? MONTHS_PLOTTED);
 
-  // Only once there is something to draw: a user who has recorded nothing gets
-  // no chart rather than a lone point sitting on zero.
-  if (upTo && dates.size > 0 && (!to || upTo <= to)) dates.add(upTo);
+  const ids = new Set(wallets.map((wallet) => wallet.id));
+  const relevant = snapshots.filter((snapshot) => ids.has(snapshot.walletId));
 
-  return [...dates].sort();
+  let earliest: IsoDate | undefined;
+  for (const snapshot of relevant) {
+    if (!earliest || snapshot.date < earliest) earliest = snapshot.date;
+  }
+  if (!earliest) return [];
+
+  return netWorthSeries(
+    wallets,
+    relevant,
+    dates.filter((date) => date >= earliest),
+  );
+}
+
+/**
+ * How a wallet's contribution to net worth moved over the last calendar month,
+ * in base-currency minor units - or `undefined` when there was nothing to
+ * compare against.
+ *
+ * Signed by effect on net worth rather than by direction, so a liability that
+ * grew comes back negative: that is the number the user actually cares about,
+ * and colouring a growing mortgage green would be a lie told in the one place
+ * it matters most.
+ *
+ * `undefined` rather than zero when the wallet had no valuation a month ago,
+ * because treating a missing prior reading as zero prints the whole balance as
+ * a gain on a wallet that was created yesterday.
+ */
+export function changeOverMonth(
+  wallet: ValuedWallet,
+  snapshots: readonly FrozenSnapshot[],
+  asOf: IsoDate,
+): number | undefined {
+  const mine = snapshots.filter((snapshot) => snapshot.walletId === wallet.id);
+
+  const before = valuationAt(mine, addMonths(asOf, -1));
+  if (!before) return undefined;
+
+  const now = valuationAt(mine, asOf);
+  if (!now) return undefined;
+
+  return signed(wallet, now) - signed(wallet, before);
+}
+
+/**
+ * One wallet's month-end series in its own currency, unsigned.
+ *
+ * The same grid and the same carry-forward rule as `monthEndSeries` - it is
+ * that function, called for one wallet with the conversion taken out - so a
+ * card's sparkline and the dashboard's line cannot disagree about a wallet's
+ * shape. What it does not do is convert or negate: a card states a liability's
+ * worth as the user typed it, and drawing €144,000 of mortgage as a line at
+ * -144,000 would contradict the figure printed above it.
+ */
+export function walletMonthEndSeries(
+  walletId: string,
+  snapshots: readonly FrozenSnapshot[],
+  options: { upTo: IsoDate; months?: number },
+): SeriesPoint[] {
+  return monthEndSeries(
+    [{ id: walletId, kind: "asset" }],
+    snapshots
+      .filter((snapshot) => snapshot.walletId === walletId)
+      .map((snapshot) => ({ ...snapshot, rate: 1 })),
+    options,
+  );
 }

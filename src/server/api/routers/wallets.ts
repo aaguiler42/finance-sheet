@@ -1,10 +1,16 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 
-import { todayIso } from "@/lib/dates";
+import { formatIsoDate, todayIso } from "@/lib/dates";
 import { type Currency, rateToBase } from "@/lib/money";
-import { netWorthAt, netWorthSeries, seriesDates, valuationAt } from "@/lib/net-worth";
+import {
+  changeOverMonth,
+  monthEndSeries,
+  netWorthAt,
+  valuationAt,
+  walletMonthEndSeries,
+} from "@/lib/net-worth";
 import {
   amountInput,
   currencyInput,
@@ -75,7 +81,14 @@ function upsertSnapshot(
 }
 
 export const walletsRouter = createTRPCRouter({
-  /** Every wallet with what it is currently worth, in its own currency. */
+  /**
+   * Every wallet with what it is currently worth, everything the card grid
+   * draws it with, and how it moved over the last month.
+   *
+   * The series and the delta are computed here rather than on the client so
+   * that one load of the portfolio answers the whole page, and so that every
+   * chart in the app comes out of `@/lib/net-worth`.
+   */
   list: protectedProcedure
     .input(z.object({ includeArchived: z.boolean().optional() }).optional())
     .query(async ({ ctx, input }) => {
@@ -85,10 +98,8 @@ export const walletsRouter = createTRPCRouter({
       return wallets
         .filter((row) => input?.includeArchived || !row.archived)
         .map((row) => {
-          const latest = valuationAt(
-            snapshots.filter((snapshot) => snapshot.walletId === row.id),
-            today,
-          );
+          const mine = snapshots.filter((snapshot) => snapshot.walletId === row.id);
+          const latest = valuationAt(mine, today);
 
           return {
             id: row.id,
@@ -99,11 +110,22 @@ export const walletsRouter = createTRPCRouter({
             /** `null` means never valued, which is not the same as worth zero. */
             currentAmount: latest?.amount ?? null,
             currentDate: latest?.date ?? null,
+            /** Month ends, in the wallet's own currency. Empty if never valued. */
+            series: walletMonthEndSeries(row.id, mine, { upTo: today }),
+            /**
+             * Signed by effect on Net Worth and in base-currency minor units,
+             * so a liability that grew is negative. `undefined` when there was
+             * no valuation a month ago to compare against.
+             */
+            change: changeOverMonth(row, mine, today),
           };
         });
     }),
 
-  /** One wallet and every value ever recorded for it, oldest first. */
+  /**
+   * One wallet, every value ever recorded for it oldest first, and the twelve
+   * month-ends its chart is drawn over - the same grid the card grid uses.
+   */
   byId: protectedProcedure
     .input(z.object({ id: idInput }))
     .query(async ({ ctx, input }) => {
@@ -120,7 +142,11 @@ export const walletsRouter = createTRPCRouter({
         )
         .orderBy(asc(walletSnapshot.date));
 
-      return { wallet: found, snapshots };
+      return {
+        wallet: found,
+        snapshots,
+        series: walletMonthEndSeries(found.id, snapshots, { upTo: todayIso() }),
+      };
     }),
 
   create: protectedProcedure
@@ -227,53 +253,81 @@ export const walletsRouter = createTRPCRouter({
     }),
 
   /**
-   * The monthly update: one date, one value per wallet, one submission. Wallets
-   * left blank are absent from `entries` rather than sent as zero - an unknown
-   * value and a value of zero are different claims.
+   * Corrects a Snapshot: a new amount, a new date, or both.
+   *
+   * The rate is deliberately not in the input and deliberately not written. A
+   * correction restates one figure; re-stamping today's rate onto a row that
+   * describes last March would silently restate a month of converted history.
+   * See docs/adr/0002 and docs/adr/0003.
    */
-  recordValues: protectedProcedure
-    .input(
-      z.object({
-        date: isoDateInput.optional(),
-        entries: z
-          .array(z.object({ walletId: idInput, amount: amountInput }))
-          .min(1, "Enter a value for at least one wallet"),
-      }),
-    )
+  updateSnapshot: protectedProcedure
+    .input(z.object({ id: idInput, amount: amountInput, date: isoDateInput }))
     .mutation(async ({ ctx, input }) => {
-      const date = input.date ?? todayIso();
-      const ids = input.entries.map((entry) => entry.walletId);
-
-      // One query for every wallet named, so a foreign id is caught before
-      // anything is written rather than half way through.
-      const owned = await ctx.db
+      const [found] = await ctx.db
         .select()
-        .from(wallet)
-        .where(and(eq(wallet.userId, ctx.user.id), inArray(wallet.id, ids)));
+        .from(walletSnapshot)
+        .where(
+          and(eq(walletSnapshot.id, input.id), eq(walletSnapshot.userId, ctx.user.id)),
+        )
+        .limit(1);
 
-      const byId = new Map(owned.map((row) => [row.id, row]));
-      for (const id of ids) {
-        if (!byId.has(id)) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Wallet not found" });
-        }
+      if (!found) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Snapshot not found" });
       }
 
-      await ctx.db.transaction(async (tx) => {
-        for (const entry of input.entries) {
-          const target = byId.get(entry.walletId);
-          if (!target) continue;
+      // Moving onto an occupied day is refused rather than upserted over. The
+      // unique index would take one of the two figures away, and losing a
+      // recorded value is not something a date correction should ever do.
+      const [clash] = await ctx.db
+        .select({ id: walletSnapshot.id })
+        .from(walletSnapshot)
+        .where(
+          and(
+            eq(walletSnapshot.walletId, found.walletId),
+            eq(walletSnapshot.date, input.date),
+            ne(walletSnapshot.id, found.id),
+          ),
+        )
+        .limit(1);
 
-          await upsertSnapshot(tx, {
-            userId: ctx.user.id,
-            walletId: target.id,
-            date,
-            amount: entry.amount,
-            rate: rateToBase(target.currency),
-          });
-        }
-      });
+      if (clash) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `There is already a value for ${formatIsoDate(input.date)}. Delete that one first, or pick another day.`,
+        });
+      }
 
-      return { date, recorded: input.entries.length };
+      const [updated] = await ctx.db
+        .update(walletSnapshot)
+        .set({ amount: input.amount, date: input.date })
+        .where(
+          and(eq(walletSnapshot.id, found.id), eq(walletSnapshot.userId, ctx.user.id)),
+        )
+        .returning();
+
+      return updated;
+    }),
+
+  /**
+   * Removes one Snapshot. Deleting the newest changes what the wallet is worth
+   * today and what Net Worth is today; both fall out of the calculation and
+   * need nothing special here.
+   */
+  deleteSnapshot: protectedProcedure
+    .input(z.object({ id: idInput }))
+    .mutation(async ({ ctx, input }) => {
+      const [removed] = await ctx.db
+        .delete(walletSnapshot)
+        .where(
+          and(eq(walletSnapshot.id, input.id), eq(walletSnapshot.userId, ctx.user.id)),
+        )
+        .returning();
+
+      if (!removed) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Snapshot not found" });
+      }
+
+      return { id: removed.id, walletId: removed.walletId };
     }),
 
   /** One figure, in base-currency minor units. Archived wallets included. */
@@ -287,25 +341,15 @@ export const walletsRouter = createTRPCRouter({
     }),
 
   /**
-   * The trend. One point per date something was recorded, plus today, because
-   * evenly spaced points would invent readings between manual entries.
+   * The trend, at each of the last twelve month-ends. The same grid the wallet
+   * cards plot, so the dashboard and a card cannot disagree about a wallet.
    */
   netWorthSeries: protectedProcedure
-    .input(
-      z
-        .object({ from: isoDateInput.optional(), to: isoDateInput.optional() })
-        .default({}),
-    )
+    .input(z.object({ to: isoDateInput.optional() }).default({}))
     .query(async ({ ctx, input }) => {
       const { wallets, snapshots } = await loadPortfolio(ctx.db, ctx.user.id);
 
-      const dates = seriesDates(snapshots, {
-        from: input.from,
-        to: input.to,
-        upTo: input.to ?? todayIso(),
-      });
-
-      return netWorthSeries(wallets, snapshots, dates);
+      return monthEndSeries(wallets, snapshots, { upTo: input.to ?? todayIso() });
     }),
 
   /** What is held in each currency, before any conversion. */

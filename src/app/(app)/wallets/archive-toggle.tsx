@@ -12,24 +12,13 @@ import { useTRPC } from "@/trpc/react";
  * whatever it was last worth. Closing an account properly means recording zero
  * first, then archiving.
  */
-export function ArchiveToggle({
-  id,
-  archived,
-  onDone,
-}: {
-  id: string;
-  archived: boolean;
-  onDone?: string;
-}) {
+export function ArchiveToggle({ id, archived }: { id: string; archived: boolean }) {
   const router = useRouter();
   const trpc = useTRPC();
 
   const setArchived = useMutation(
     trpc.wallets.setArchived.mutationOptions({
-      onSuccess: () => {
-        if (onDone) router.push(onDone);
-        router.refresh();
-      },
+      onSuccess: () => router.refresh(),
     }),
   );
 

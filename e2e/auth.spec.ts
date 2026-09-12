@@ -85,8 +85,8 @@ test.describe("sign in", () => {
 
     await expect(page).toHaveURL(/\/dashboard$/);
     await expect(page.getByRole("heading", { name: "Net worth" })).toBeVisible();
-    // The header reads the session server-side, so this proves the cookie stuck.
-    await expect(page.getByRole("banner").getByText(DEV_EMAIL)).toBeVisible();
+    // The sidebar reads the session server-side, so this proves the cookie stuck.
+    await expect(page.getByRole("complementary").getByText(DEV_EMAIL)).toBeVisible();
   });
 });
 
@@ -111,7 +111,7 @@ test.describe("sign up", () => {
     await page.getByRole("button", { name: "Sign up" }).click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByRole("banner").getByText(email)).toBeVisible();
+    await expect(page.getByRole("complementary").getByText(email)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Net worth" })).toBeVisible();
   });
 

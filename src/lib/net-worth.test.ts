@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { EUR_PER_USD, rateToBase } from "./money";
 import {
+  changeOverMonth,
   type FrozenSnapshot,
+  monthEndDates,
+  monthEndSeries,
   netWorthAt,
   netWorthSeries,
-  seriesDates,
   type ValuedWallet,
   valuationAt,
 } from "./net-worth";
@@ -255,39 +257,194 @@ describe("net worth over time", () => {
   });
 });
 
-describe("choosing the dates to plot", () => {
-  const snapshots = [
-    snapshot("current", "2024-01-31", 1000),
-    snapshot("brokerage", "2024-01-31", 500),
-    snapshot("current", "2024-03-31", 1500),
-  ];
-
-  it("gives one point per distinct recorded date", () => {
-    expect(seriesDates(snapshots)).toEqual(["2024-01-31", "2024-03-31"]);
-  });
-
-  it("runs the line up to today even if nothing was recorded today", () => {
-    expect(seriesDates(snapshots, { upTo: "2024-06-30" })).toEqual([
-      "2024-01-31",
-      "2024-03-31",
+describe("the month-end grid", () => {
+  it("ends at the end of the month the date falls in", () => {
+    expect(monthEndDates("2024-06-14", 3)).toEqual([
+      "2024-04-30",
+      "2024-05-31",
       "2024-06-30",
     ]);
   });
 
-  it("anchors a window at its own start when a wallet was valued before it", () => {
-    expect(seriesDates(snapshots, { from: "2024-02-01" })).toEqual([
-      "2024-02-01",
-      "2024-03-31",
+  it("never overflows a short month on the way back", () => {
+    // Naive arithmetic from the 31st of March lands on the 2nd or 3rd of March.
+    expect(monthEndDates("2024-03-31", 2)).toEqual(["2024-02-29", "2024-03-31"]);
+  });
+
+  it("crosses a year boundary", () => {
+    expect(monthEndDates("2024-01-31", 3)).toEqual([
+      "2023-11-30",
+      "2023-12-31",
+      "2024-01-31",
+    ]);
+  });
+});
+
+describe("a wallet's month-end series", () => {
+  it("gives twelve points ending at the current month end", () => {
+    const snapshots = [snapshot("current", "2020-01-31", 1000)];
+
+    const series = monthEndSeries([current], snapshots, { upTo: "2024-06-14" });
+
+    expect(series).toHaveLength(12);
+    expect(series[0].date).toBe("2023-07-31");
+    expect(series[11].date).toBe("2024-06-30");
+  });
+
+  it("holds a stated value forward across a month with no snapshot in it", () => {
+    const snapshots = [
+      snapshot("current", "2024-01-31", 1000),
+      snapshot("current", "2024-03-31", 1500),
+    ];
+
+    const series = monthEndSeries([current], snapshots, {
+      upTo: "2024-04-30",
+      months: 4,
+    });
+
+    expect(series.map((point) => [point.date, point.amount])).toEqual([
+      ["2024-01-31", 100_000],
+      ["2024-02-29", 100_000],
+      ["2024-03-31", 150_000],
+      ["2024-04-30", 150_000],
     ]);
   });
 
-  it("drops dates outside the window", () => {
-    expect(seriesDates(snapshots, { to: "2024-02-01" })).toEqual(["2024-01-31"]);
+  it("is flat from the month it was valued in, with nothing before it", () => {
+    const snapshots = [snapshot("current", "2024-03-15", 1000)];
+
+    const series = monthEndSeries([current], snapshots, {
+      upTo: "2024-05-31",
+      months: 6,
+    });
+
+    // Nothing for December through February: a gap is not a zero.
+    expect(series.map((point) => point.date)).toEqual([
+      "2024-03-31",
+      "2024-04-30",
+      "2024-05-31",
+    ]);
+    expect(series.every((point) => point.amount === 100_000)).toBe(true);
   });
 
-  it("gives nothing when nothing was ever recorded", () => {
-    expect(seriesDates([])).toEqual([]);
-    // Not even today: a chart of nothing is not a line sitting on zero.
-    expect(seriesDates([], { upTo: "2024-06-30" })).toEqual([]);
+  it("gives no points at all for a wallet that was never valued", () => {
+    expect(monthEndSeries([current], [], { upTo: "2024-06-30" })).toEqual([]);
+  });
+
+  it("ignores snapshots belonging to a wallet that was not passed in", () => {
+    const snapshots = [snapshot("somebody-elses", "2024-01-31", 9999)];
+
+    expect(monthEndSeries([current], snapshots, { upTo: "2024-06-30" })).toEqual([]);
+  });
+
+  it("adds up a mixed-currency portfolio at each month end", () => {
+    const wallets = [current, brokerage, mortgage];
+    const snapshots = [
+      snapshot("current", "2024-01-31", 1000),
+      snapshot("brokerage", "2024-02-29", 1000, rateToBase("USD")),
+      snapshot("mortgage", "2024-03-31", 500),
+    ];
+
+    const series = monthEndSeries(wallets, snapshots, {
+      upTo: "2024-03-31",
+      months: 3,
+    });
+
+    const usd = Math.round(100_000 * EUR_PER_USD);
+    expect(series.map((point) => point.amount)).toEqual([
+      100_000,
+      100_000 + usd,
+      100_000 + usd - 50_000,
+    ]);
+  });
+
+  it("agrees with the point-in-time figure at every month end", () => {
+    const wallets = [current, mortgage];
+    const snapshots = [
+      snapshot("current", "2024-01-10", 1000),
+      snapshot("current", "2024-04-20", 1200),
+      snapshot("mortgage", "2024-02-14", 800),
+    ];
+
+    for (const point of monthEndSeries(wallets, snapshots, { upTo: "2024-06-30" })) {
+      expect(point.amount).toBe(netWorthAt(wallets, snapshots, point.date));
+    }
+  });
+});
+
+describe("what a wallet did over the last month", () => {
+  it("is the signed change in what it contributes", () => {
+    const snapshots = [
+      snapshot("current", "2024-04-30", 1000),
+      snapshot("current", "2024-05-31", 1120),
+    ];
+
+    expect(changeOverMonth(current, snapshots, "2024-05-31")).toBe(12_000);
+  });
+
+  it("is negative for a liability that grew, because net worth fell", () => {
+    const snapshots = [
+      snapshot("mortgage", "2024-04-30", 200_000),
+      snapshot("mortgage", "2024-05-31", 201_000),
+    ];
+
+    expect(changeOverMonth(mortgage, snapshots, "2024-05-31")).toBe(-100_000);
+  });
+
+  it("is positive for a liability that was paid down", () => {
+    const snapshots = [
+      snapshot("mortgage", "2024-04-30", 200_000),
+      snapshot("mortgage", "2024-05-31", 199_000),
+    ];
+
+    expect(changeOverMonth(mortgage, snapshots, "2024-05-31")).toBe(100_000);
+  });
+
+  it("is nothing at all when there was no valuation a month ago", () => {
+    const snapshots = [snapshot("current", "2024-05-20", 1000)];
+
+    expect(changeOverMonth(current, snapshots, "2024-05-31")).toBeUndefined();
+  });
+
+  it("is nothing at all for a wallet that was never valued", () => {
+    expect(changeOverMonth(current, [], "2024-05-31")).toBeUndefined();
+  });
+
+  it("is zero, not absent, when a value was stated and has not moved", () => {
+    const snapshots = [snapshot("current", "2024-01-31", 1000)];
+
+    expect(changeOverMonth(current, snapshots, "2024-05-31")).toBe(0);
+  });
+
+  it("compares against the month before, not thirty days before", () => {
+    // The 28th of February is one month before the 31st of March; the 1st of
+    // March is not, and picking it up would compare March against itself.
+    const snapshots = [
+      snapshot("current", "2024-02-28", 1000),
+      snapshot("current", "2024-03-01", 1500),
+      snapshot("current", "2024-03-31", 1600),
+    ];
+
+    expect(changeOverMonth(current, snapshots, "2024-03-31")).toBe(60_000);
+  });
+
+  it("converts with the rate frozen on each snapshot", () => {
+    const snapshots = [
+      snapshot("brokerage", "2024-04-30", 1000, 0.8),
+      snapshot("brokerage", "2024-05-31", 1000, 0.9),
+    ];
+
+    // The same dollars, a different rate: the change is real, because each row
+    // states what it was worth in euro on the day it was written.
+    expect(changeOverMonth(brokerage, snapshots, "2024-05-31")).toBe(10_000);
+  });
+
+  it("ignores another wallet's snapshots", () => {
+    const snapshots = [
+      snapshot("current", "2024-04-30", 1000),
+      snapshot("brokerage", "2024-05-31", 9999),
+    ];
+
+    expect(changeOverMonth(current, snapshots, "2024-05-31")).toBe(0);
   });
 });

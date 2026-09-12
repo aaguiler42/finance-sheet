@@ -19,9 +19,10 @@ _Avoid_: Account (that name belongs to Better Auth's provider table), Balance,
 Pot
 
 **Snapshot**:
-A dated statement of what a Wallet was worth at that moment, entered by you.
-Snapshots are append-only: correcting a Wallet means adding a newer Snapshot,
-never editing or deleting an older one.
+A dated statement of what a Wallet was worth at that moment, entered by you, and
+correctable: any Snapshot may be edited or deleted, and there is only ever one
+per Wallet per day. A correction restates the amount or the date, never the
+exchange rate the Snapshot was written with — see docs/adr/0003.
 _Avoid_: Balance, Valuation, Reading, Update
 
 **Kind**:
@@ -85,6 +86,6 @@ Expense, and Snapshot are independent records that never meet in a ledger.
 **Balance**: nothing in this app is derived by accumulation. Use Snapshot for
 what a Wallet is worth.
 
-**Reversing entry**: Incomes are records of facts, not accounting positions. A
-wrong one is corrected by editing it or deleting it. Only Snapshots are
-append-only.
+**Reversing entry**: everything here is a record of a fact, not an accounting
+position. A wrong Income or Snapshot is corrected by editing it or deleting it;
+nothing is ever cancelled out by an opposing entry.

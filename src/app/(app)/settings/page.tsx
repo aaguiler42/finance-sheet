@@ -1,3 +1,4 @@
+import { Breadcrumbs } from "@/app/(app)/_components/breadcrumbs";
 import { Panel } from "@/app/(app)/_components/ui";
 import { api } from "@/trpc/server";
 import { CategoryManager } from "./category-manager";
@@ -11,22 +12,25 @@ export default async function SettingsPage() {
   ]);
 
   return (
-    <main className="flex flex-1 flex-col gap-6 p-6">
-      <h1 className="text-xl font-semibold">Settings</h1>
+    <>
+      <Breadcrumbs trail={[{ label: "Settings" }]} />
+      <main className="flex flex-1 flex-col gap-6 p-6">
+        <h1 className="text-xl font-semibold">Settings</h1>
 
-      <Panel
-        title="Display currency"
-        description="Changes how totals are shown. Nothing stored is converted or rewritten."
-      >
-        <DisplayCurrencyForm current={preferences.displayCurrency} />
-      </Panel>
+        <Panel
+          title="Display currency"
+          description="Changes how totals are shown. Nothing stored is converted or rewritten."
+        >
+          <DisplayCurrencyForm current={preferences.displayCurrency} />
+        </Panel>
 
-      <Panel
-        title="Income categories"
-        description="Groups hold categories. Income is always filed under a category, never a group."
-      >
-        <CategoryManager groups={tree} />
-      </Panel>
-    </main>
+        <Panel
+          title="Income categories"
+          description="Groups hold categories. Income is always filed under a category, never a group."
+        >
+          <CategoryManager groups={tree} />
+        </Panel>
+      </main>
+    </>
   );
 }

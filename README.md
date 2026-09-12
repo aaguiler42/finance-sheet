@@ -62,7 +62,7 @@ src/
 ├── app/
 │   ├── (app)/              # authenticated routes; layout redirects to /login
 │   │   ├── dashboard/      # net worth, trend, recent income
-│   │   ├── wallets/        # list, bulk update, and [id] history
+│   │   ├── wallets/        # card grid, modals, and [id] chart + history
 │   │   ├── income/         # list, filters, add, paste import
 │   │   └── settings/       # display currency, category tree
 │   ├── (auth)/login/

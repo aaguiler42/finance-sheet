@@ -2,170 +2,230 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import {
-  button,
-  ErrorText,
-  input,
-  linkButton,
-  quietButton,
-} from "@/app/(app)/_components/ui";
-import { todayIso } from "@/lib/dates";
+import { errorMessage } from "@/app/(app)/_components/error-message";
+import { Modal, ModalActions } from "@/app/(app)/_components/modal";
+import { button, ErrorText, input, quietButton } from "@/app/(app)/_components/ui";
 import type { Currency } from "@/lib/money";
 import { useTRPC } from "@/trpc/react";
+import { SnapshotHistory, type SnapshotRow } from "./snapshot-history";
 
 /**
- * Records what this wallet is worth on a chosen day.
+ * The action row on a wallet's page: Update value, and everything else behind
+ * one menu.
  *
- * The date is chosen rather than assumed, so a figure read off last week's
- * statement lands on the day it describes. Writing a second value for a day
- * that already has one replaces it: a correction should leave one figure for
- * that day, not two that disagree.
+ * Rename, Archive and Delete are things you do to a wallet once or twice in its
+ * life, and History is a reference rather than a working surface. Putting them
+ * in a menu leaves the page about the chart, which is the question it exists to
+ * answer.
  */
-export function RecordValueForm({
-  walletId,
+export function WalletMenu({
+  id,
+  name,
   currency,
+  archived,
+  snapshots,
 }: {
-  walletId: string;
+  id: string;
+  name: string;
   currency: Currency;
+  archived: boolean;
+  snapshots: readonly SnapshotRow[];
+}) {
+  const router = useRouter();
+  const trpc = useTRPC();
+  const menu = useRef<HTMLDivElement>(null);
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [open, setOpen] = useState<"none" | "rename" | "history">("none");
+  const [error, setError] = useState<string | null>(null);
+
+  // A menu that stays open once the pointer has moved on is a menu in the way.
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && menu.current?.contains(event.target)) return;
+      setMenuOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  const setArchived = useMutation(
+    trpc.wallets.setArchived.mutationOptions({
+      onSuccess: () => router.refresh(),
+      onError: (cause) => setError(errorMessage(cause)),
+    }),
+  );
+
+  const remove = useMutation(
+    trpc.wallets.delete.mutationOptions({
+      onSuccess: () => router.push("/wallets"),
+      onError: (cause) => setError(errorMessage(cause)),
+    }),
+  );
+
+  const item =
+    "w-full px-3 py-2 text-left text-sm hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10";
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div ref={menu} className="relative">
+        <button
+          type="button"
+          className={quietButton}
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((was) => !was)}
+        >
+          More options
+        </button>
+
+        {/* A plain group of buttons rather than `role="menu"`: that role
+            promises arrow-key navigation and a roving tabindex, and promising it
+            without implementing it is worse than not claiming it. */}
+        {menuOpen && (
+          <div className="absolute right-0 z-10 mt-1 flex w-44 flex-col rounded-md border border-black/10 bg-background py-1 shadow-lg dark:border-white/15">
+            <button
+              type="button"
+              className={item}
+              onClick={() => {
+                setMenuOpen(false);
+                setOpen("history");
+              }}
+            >
+              History
+            </button>
+            <button
+              type="button"
+              className={item}
+              onClick={() => {
+                setMenuOpen(false);
+                setOpen("rename");
+              }}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              className={item}
+              disabled={setArchived.isPending}
+              onClick={() => {
+                setMenuOpen(false);
+                setError(null);
+                setArchived.mutate({ id, archived: !archived });
+              }}
+            >
+              {archived ? "Unarchive" : "Archive"}
+            </button>
+            {/* Only ever offered for a wallet nothing was recorded against. The
+                server refuses the rest, and that refusal is surfaced below. */}
+            {snapshots.length === 0 && (
+              <button
+                type="button"
+                className={`${item} text-red-600 dark:text-red-400`}
+                disabled={remove.isPending}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setError(null);
+                  remove.mutate({ id });
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <ErrorText>{error}</ErrorText>
+
+      <RenameWalletModal
+        id={id}
+        name={name}
+        open={open === "rename"}
+        onClose={() => setOpen("none")}
+      />
+      <SnapshotHistory
+        walletId={id}
+        walletName={name}
+        currency={currency}
+        snapshots={snapshots}
+        open={open === "history"}
+        onClose={() => setOpen("none")}
+      />
+    </div>
+  );
+}
+
+/** Renaming changes the label and nothing else; the history stays where it is. */
+function RenameWalletModal({
+  id,
+  name,
+  open,
+  onClose,
+}: {
+  id: string;
+  name: string;
+  open: boolean;
+  onClose: () => void;
 }) {
   const router = useRouter();
   const trpc = useTRPC();
   const [error, setError] = useState<string | null>(null);
 
-  const record = useMutation(
-    trpc.wallets.recordValue.mutationOptions({
-      onSuccess: () => {
-        setError(null);
-        router.refresh();
-      },
-      onError: (cause) => setError(cause.message),
-    }),
-  );
-
-  return (
-    <form
-      className="flex flex-wrap items-end gap-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const element = event.currentTarget;
-        const form = new FormData(element);
-        const amount = String(form.get("amount") ?? "").trim();
-
-        if (amount === "") {
-          setError("Enter what the wallet is worth");
-          return;
-        }
-
-        record.mutate(
-          { walletId, amount, date: String(form.get("date")) },
-          {
-            onSuccess: () => {
-              const field = element.elements.namedItem("amount");
-              if (field instanceof HTMLInputElement) field.value = "";
-            },
-          },
-        );
-      }}
-    >
-      <label className="flex flex-col gap-1 text-sm">
-        Value ({currency})
-        <input
-          name="amount"
-          inputMode="decimal"
-          className={input}
-          placeholder="1234.56"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1 text-sm">
-        Date
-        <input type="date" name="date" defaultValue={todayIso()} className={input} />
-      </label>
-
-      <button type="submit" className={button} disabled={record.isPending}>
-        {record.isPending ? "Saving..." : "Record value"}
-      </button>
-
-      <ErrorText>{error}</ErrorText>
-    </form>
-  );
-}
-
-/** Renaming changes the label and nothing else; the history stays where it is. */
-export function RenameWalletForm({ id, name }: { id: string; name: string }) {
-  const router = useRouter();
-  const trpc = useTRPC();
-  const [open, setOpen] = useState(false);
-
   const rename = useMutation(
     trpc.wallets.rename.mutationOptions({
       onSuccess: () => {
-        setOpen(false);
+        setError(null);
+        onClose();
         router.refresh();
       },
+      onError: (cause) => setError(errorMessage(cause)),
     }),
   );
 
-  if (!open) {
-    return (
-      <button type="button" className={linkButton} onClick={() => setOpen(true)}>
-        Rename
-      </button>
-    );
-  }
-
   return (
-    <form
-      className="flex items-end gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        rename.mutate({ id, name: String(form.get("name") ?? "") });
-      }}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Rename wallet"
+      description="Only the label changes. Every value you recorded stays where it is."
     >
-      <label className="flex flex-col gap-1 text-sm">
-        New name
-        <input name="name" defaultValue={name} className={input} />
-      </label>
-      <button type="submit" className={quietButton} disabled={rename.isPending}>
-        Save
-      </button>
-      <button type="button" className={linkButton} onClick={() => setOpen(false)}>
-        Cancel
-      </button>
-    </form>
-  );
-}
+      {/* Mounted only while open, so the field always shows the wallet's
+          current name rather than an abandoned draft of it. */}
+      {open && (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const form = new FormData(event.currentTarget);
+            rename.mutate({ id, name: String(form.get("name") ?? "") });
+          }}
+        >
+          <label className="flex flex-col gap-1 text-sm">
+            Name
+            <input name="name" defaultValue={name} className={input} />
+          </label>
 
-/**
- * Only ever available for a wallet nothing was recorded against. The server
- * refuses the rest, and this surfaces that refusal rather than hiding it.
- */
-export function DeleteWalletButton({ id }: { id: string }) {
-  const router = useRouter();
-  const trpc = useTRPC();
-  const [error, setError] = useState<string | null>(null);
+          <ErrorText>{error}</ErrorText>
 
-  const remove = useMutation(
-    trpc.wallets.delete.mutationOptions({
-      onSuccess: () => router.push("/wallets"),
-      onError: (cause) => setError(cause.message),
-    }),
-  );
-
-  return (
-    <span className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        className={linkButton}
-        disabled={remove.isPending}
-        onClick={() => remove.mutate({ id })}
-      >
-        Delete
-      </button>
-      <ErrorText>{error}</ErrorText>
-    </span>
+          <ModalActions onCancel={onClose}>
+            <button type="submit" className={button} disabled={rename.isPending}>
+              {rename.isPending ? "Saving..." : "Save"}
+            </button>
+          </ModalActions>
+        </form>
+      )}
+    </Modal>
   );
 }

@@ -253,55 +253,207 @@ describe("the same-date rule", () => {
   });
 });
 
-describe("the monthly bulk update", () => {
-  it("writes one value per wallet in a single submission", async () => {
-    const user = await signedIn("bulk");
-    const one = await withWallet(user, { name: "Current" });
-    const two = await withWallet(user, { name: "Savings" });
-
-    await user.caller.wallets.recordValues({
-      date: "2024-05-31",
-      entries: [
-        { walletId: one.id, amount: "1000" },
-        { walletId: two.id, amount: "2000" },
-      ],
+/**
+ * Snapshots are correctable - see docs/adr/0003. What that has to mean, and
+ * what these prove: an edit restates one figure, it never restates the rate,
+ * and it never quietly destroys the figure already sitting on the target day.
+ */
+describe("correcting a snapshot", () => {
+  it("changes the amount and leaves the rate exactly as it was", async () => {
+    const user = await signedIn("snapshot-edit-rate");
+    const wallet = await withWallet(user, { currency: "USD" });
+    const written = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-03-31",
     });
 
-    const list = await user.caller.wallets.list();
-    expect(list.map((wallet) => wallet.currentAmount).sort()).toEqual([100_000, 200_000]);
-  });
-
-  it("leaves a wallet that was not submitted alone, rather than zeroing it", async () => {
-    const user = await signedIn("bulk-skip");
-    const one = await withWallet(user, { name: "Current" });
-    const two = await withWallet(user, { name: "Savings" });
-
-    await user.caller.wallets.recordValue({ walletId: two.id, amount: "2000" });
-    await user.caller.wallets.recordValues({
-      entries: [{ walletId: one.id, amount: "1000" }],
+    const corrected = await user.caller.wallets.updateSnapshot({
+      id: written.id,
+      amount: "1100",
+      date: "2024-03-31",
     });
 
-    const { snapshots } = await user.caller.wallets.byId({ id: two.id });
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].amount).toBe(200_000);
+    expect(corrected.amount).toBe(110_000);
+    expect(corrected.rate).toBe(written.rate);
+    expect(corrected.rate).toBe(EUR_PER_USD);
   });
 
-  it("obeys the same-date rule, so a resubmitted month replaces itself", async () => {
-    const user = await signedIn("bulk-replace");
+  it("moves a figure onto the day it actually describes", async () => {
+    const user = await signedIn("snapshot-edit-date");
     const wallet = await withWallet(user);
-
-    await user.caller.wallets.recordValues({
-      date: "2024-05-31",
-      entries: [{ walletId: wallet.id, amount: "1000" }],
+    const written = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-03-31",
     });
-    await user.caller.wallets.recordValues({
-      date: "2024-05-31",
-      entries: [{ walletId: wallet.id, amount: "1100" }],
+
+    await user.caller.wallets.updateSnapshot({
+      id: written.id,
+      amount: "1000",
+      date: "2024-02-29",
     });
 
     const { snapshots } = await user.caller.wallets.byId({ id: wallet.id });
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].amount).toBe(110_000);
+    expect(snapshots[0].date).toBe("2024-02-29");
+  });
+
+  it("refuses a move onto a day that already has a figure, naming that day", async () => {
+    const user = await signedIn("snapshot-edit-clash");
+    const wallet = await withWallet(user);
+    const january = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
+    await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "2000",
+      date: "2024-02-29",
+    });
+
+    await expect(
+      user.caller.wallets.updateSnapshot({
+        id: january.id,
+        amount: "1000",
+        date: "2024-02-29",
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("29 Feb 2024"),
+    });
+
+    // Neither row moved, and neither amount changed.
+    const { snapshots } = await user.caller.wallets.byId({ id: wallet.id });
+    expect(snapshots.map((row) => [row.date, row.amount])).toEqual([
+      ["2024-01-31", 100_000],
+      ["2024-02-29", 200_000],
+    ]);
+  });
+
+  it("lets a snapshot keep its own date while its amount changes", async () => {
+    const user = await signedIn("snapshot-edit-same-date");
+    const wallet = await withWallet(user);
+    const written = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
+
+    // The row is excluded from its own collision check, or no amount could
+    // ever be corrected without also moving the date.
+    const corrected = await user.caller.wallets.updateSnapshot({
+      id: written.id,
+      amount: "1234.56",
+      date: "2024-01-31",
+    });
+
+    expect(corrected.amount).toBe(123_456);
+  });
+
+  it("does not touch another wallet's figure for the same day", async () => {
+    const user = await signedIn("snapshot-edit-other-wallet");
+    const one = await withWallet(user, { name: "Current" });
+    const two = await withWallet(user, { name: "Savings" });
+    const written = await user.caller.wallets.recordValue({
+      walletId: one.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
+    await user.caller.wallets.recordValue({
+      walletId: two.id,
+      amount: "2000",
+      date: "2024-02-29",
+    });
+
+    // One figure per *wallet* per day, so the other wallet's 29th is no clash.
+    await user.caller.wallets.updateSnapshot({
+      id: written.id,
+      amount: "1000",
+      date: "2024-02-29",
+    });
+
+    const savings = await user.caller.wallets.byId({ id: two.id });
+    expect(savings.snapshots).toHaveLength(1);
+    expect(savings.snapshots[0].amount).toBe(200_000);
+  });
+
+  it("rejects an unparseable amount", async () => {
+    const user = await signedIn("snapshot-edit-bad-amount");
+    const wallet = await withWallet(user);
+    const written = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
+
+    await expect(
+      user.caller.wallets.updateSnapshot({
+        id: written.id,
+        amount: "not a number",
+        date: "2024-01-31",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+});
+
+describe("deleting a snapshot", () => {
+  it("removes the row and changes what the wallet is worth", async () => {
+    const user = await signedIn("snapshot-delete");
+    const wallet = await withWallet(user);
+    await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
+    const newest = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1500",
+      date: "2024-02-29",
+    });
+
+    await user.caller.wallets.deleteSnapshot({ id: newest.id });
+
+    const { snapshots } = await user.caller.wallets.byId({ id: wallet.id });
+    expect(snapshots).toHaveLength(1);
+
+    // The older figure is what the wallet is worth again, and Net Worth with it.
+    const [listed] = await user.caller.wallets.list();
+    expect(listed.currentAmount).toBe(100_000);
+    await expect(user.caller.wallets.netWorth()).resolves.toMatchObject({
+      amount: 100_000,
+    });
+  });
+
+  it("answers NOT_FOUND for a snapshot that is not there", async () => {
+    const user = await signedIn("snapshot-delete-missing");
+
+    await expect(
+      user.caller.wallets.deleteSnapshot({ id: "nope" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  /**
+   * The guard survives the arrival of delete: the deliberate route to an empty
+   * wallet is one confirmation per figure, which is consent enough.
+   */
+  it("still refuses to delete a wallet that has history", async () => {
+    const user = await signedIn("snapshot-delete-then-wallet");
+    const wallet = await withWallet(user);
+    const written = await user.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+    });
+
+    await expect(user.caller.wallets.delete({ id: wallet.id })).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+
+    await user.caller.wallets.deleteSnapshot({ id: written.id });
+    await expect(user.caller.wallets.delete({ id: wallet.id })).resolves.toMatchObject({
+      id: wallet.id,
+    });
   });
 });
 
@@ -453,26 +605,32 @@ describe("ownership", () => {
     expect(snapshots).toEqual([]);
   });
 
-  it("does not slip a foreign wallet into a bulk submission", async () => {
-    const owner = await signedIn("owner-bulk");
-    const stranger = await signedIn("stranger-bulk");
-    const theirs = await withWallet(owner);
-    const mine = await withWallet(stranger);
+  it("does not correct or delete another user's snapshot", async () => {
+    const owner = await signedIn("owner-snapshot");
+    const stranger = await signedIn("stranger-snapshot");
+    const wallet = await withWallet(owner);
+    const written = await owner.caller.wallets.recordValue({
+      walletId: wallet.id,
+      amount: "1000",
+      date: "2024-01-31",
+    });
 
     await expect(
-      stranger.caller.wallets.recordValues({
-        entries: [
-          { walletId: mine.id, amount: "1" },
-          { walletId: theirs.id, amount: "999" },
-        ],
+      stranger.caller.wallets.updateSnapshot({
+        id: written.id,
+        amount: "999999",
+        date: "2024-01-31",
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    // Nothing at all was written, not even the half that was legitimate.
-    const { snapshots } = await owner.caller.wallets.byId({ id: theirs.id });
-    expect(snapshots).toEqual([]);
-    const mySnapshots = await stranger.caller.wallets.byId({ id: mine.id });
-    expect(mySnapshots.snapshots).toEqual([]);
+    await expect(
+      stranger.caller.wallets.deleteSnapshot({ id: written.id }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // Untouched, and still worth what its owner said it was.
+    const { snapshots } = await owner.caller.wallets.byId({ id: wallet.id });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].amount).toBe(100_000);
   });
 
   it("does not rename, archive or delete another user's wallet", async () => {

@@ -45,3 +45,36 @@ export function formatIsoDate(value: IsoDate): string {
     timeZone: "UTC",
   });
 }
+
+/** The last day of the month `value` falls in. */
+export function endOfMonth(value: IsoDate): IsoDate {
+  const [year, month] = value.split("-").map(Number);
+  // Day 0 of the next month is the last day of this one, leap years included.
+  const date = new Date(Date.UTC(year, month, 0));
+  return toIsoDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+}
+
+/**
+ * `value` shifted by whole calendar months, clamped to the end of the target
+ * month. One month before the 31st of March is the 28th (or 29th) of February,
+ * not the 2nd or 3rd of March - which is what date arithmetic that overflows
+ * would give, and would make "vs last month" compare against the wrong month.
+ */
+export function addMonths(value: IsoDate, months: number): IsoDate {
+  const [year, month, day] = value.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1 + months, 1));
+  const targetYear = shifted.getUTCFullYear();
+  const targetMonth = shifted.getUTCMonth() + 1;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  return toIsoDate(targetYear, targetMonth, Math.min(day, lastDay));
+}
+
+/** Just the month, for labelling a chart axis: "Mar 24". */
+export function formatIsoMonth(value: IsoDate): string {
+  const [year, month] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("en-IE", {
+    month: "short",
+    year: "2-digit",
+    timeZone: "UTC",
+  });
+}

@@ -1,6 +1,14 @@
 import { expect, type Page, test } from "@playwright/test";
 
-import { createWallet, signUpFreshUser } from "./helpers";
+import {
+  createWallet,
+  currentlyWorth,
+  openHistory,
+  openWallet,
+  recordValue,
+  signUpFreshUser,
+  walletCard,
+} from "./helpers";
 
 /**
  * The one headline figure. Scoped to its own region because the same number
@@ -19,11 +27,11 @@ test("recording a value moves the net worth figure", async ({ page }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Current account");
 
-  await page.getByLabel("New value for Current account").fill("1500.50");
-  await page.getByRole("button", { name: "Save values" }).click();
-  await expect(page.getByText("Recorded 1 value.")).toBeVisible();
-  // The figure appears in the list and again in the bulk form's "Currently".
-  await expect(page.getByRole("cell", { name: "€1,500.50" }).first()).toBeVisible();
+  const card = walletCard(page, "Current account");
+  await expect(card).toContainText("Not valued yet");
+
+  await recordValue(page, "1500.50", { from: card });
+  await expect(card).toContainText("€1,500.50");
 
   await page.goto("/dashboard");
   await expect(netWorth(page)).toHaveText("€1,500.50");
@@ -34,90 +42,215 @@ test("a liability is subtracted from net worth", async ({ page }) => {
   await createWallet(page, "Current account");
   await createWallet(page, "Mortgage", { kind: "liability" });
 
-  await page.getByLabel("New value for Current account").fill("1000");
-  await page.getByLabel("New value for Mortgage").fill("2500");
-  await page.getByRole("button", { name: "Save values" }).click();
-  await expect(page.getByText("Recorded 2 values.")).toBeVisible();
+  await recordValue(page, "1000", { from: walletCard(page, "Current account") });
+  await recordValue(page, "2500", { from: walletCard(page, "Mortgage") });
 
   await page.goto("/dashboard");
   await expect(netWorth(page)).toHaveText("-€1,500.00");
 });
 
-test("a wallet left blank in the bulk form is skipped, not zeroed", async ({ page }) => {
+/**
+ * The distinction the whole app rests on: a wallet nobody has looked at is not
+ * a wallet worth nothing. It says so on its card, and it moves no total.
+ */
+test("a wallet nobody has valued says so rather than showing zero", async ({ page }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Current account");
   await createWallet(page, "Savings");
 
-  await page.getByLabel("New value for Current account").fill("1000");
-  await page.getByLabel("New value for Savings").fill("400");
-  await page.getByRole("button", { name: "Save values" }).click();
-  await expect(page.getByText("Recorded 2 values.")).toBeVisible();
+  await recordValue(page, "1000", { from: walletCard(page, "Current account") });
 
-  // A second round that only touches one of them.
-  await page.getByLabel("New value for Current account").fill("1100");
-  await page.getByRole("button", { name: "Save values" }).click();
-  await expect(page.getByText("Recorded 1 value.")).toBeVisible();
+  await expect(walletCard(page, "Current account")).toContainText("€1,000.00");
+  const untouched = walletCard(page, "Savings");
+  await expect(untouched).toContainText("Not valued yet");
+  await expect(untouched).not.toContainText("vs last month");
 
-  await expect(page.getByRole("cell", { name: "€1,100.00" }).first()).toBeVisible();
-  await expect(page.getByRole("cell", { name: "€400.00" }).first()).toBeVisible();
+  await page.goto("/dashboard");
+  await expect(netWorth(page)).toHaveText("€1,000.00");
 });
 
-test("a wallet's own page keeps its full history in date order", async ({ page }) => {
+/**
+ * An unparseable figure is the server's judgement, and the modal has to stay
+ * open to show it - closing would throw away what the user typed.
+ */
+test("an unparseable value is refused inside the modal", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Current account");
+
+  await walletCard(page, "Current account")
+    .getByRole("button", { name: "Update value" })
+    .click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel(/^Value/).fill("not a number");
+  await modal.getByRole("button", { name: "Save" }).click();
+
+  await expect(modal).toBeVisible();
+  await expect(modal.getByRole("alert")).toContainText("Enter an amount");
+});
+
+/**
+ * Found by hand: the modal was mounted once and its fields read their
+ * `defaultValue` at mount, so a second opening still showed whatever had been
+ * typed into the first - or the figure the wallet was worth before the save.
+ */
+test("the update modal is reseeded every time it opens", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Current account");
+  const card = walletCard(page, "Current account");
+
+  await recordValue(page, "1000", { from: card });
+  await expect(card).toContainText("€1,000.00");
+
+  // Reopened after a save: the saved figure, not the one it replaced.
+  await card.getByRole("button", { name: "Update value" }).click();
+  const modal = page.getByRole("dialog", { name: /^Update / });
+  await expect(modal.getByLabel(/^Value/)).toHaveValue("1000.00");
+
+  // Reopened after an abandoned edit: still the saved figure.
+  await modal.getByLabel(/^Value/).fill("99999");
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  await card.getByRole("button", { name: "Update value" }).click();
+  await expect(modal.getByLabel(/^Value/)).toHaveValue("1000.00");
+});
+
+test("the create wallet modal closes on Escape without creating anything", async ({
+  page,
+}) => {
+  await signUpFreshUser(page);
+  await page.goto("/wallets");
+
+  await page.getByRole("button", { name: "Create wallet", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Name").fill("Abandoned");
+  await page.keyboard.press("Escape");
+
+  await expect(modal).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Abandoned" })).toHaveCount(0);
+});
+
+test("a wallet's own page keeps its full history, newest first", async ({ page }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Savings");
+  await openWallet(page, "Savings");
 
-  await page.getByRole("link", { name: "Savings" }).click();
-  await expect(page).toHaveURL(/\/wallets\/[^/]+$/);
+  // Entered newest first, and backdated - the modal must still sort them.
+  await recordValue(page, "2000", { date: "2024-06-30" });
+  await recordValue(page, "1000", { date: "2024-01-31" });
 
-  // Entered newest first, and backdated - the page must still read oldest first.
-  await page.getByLabel("Value (EUR)").fill("2000");
-  await page.getByLabel("Date").fill("2024-06-30");
-  await page.getByRole("button", { name: "Record value" }).click();
-  await expect(page.getByRole("cell", { name: "30 Jun 2024" })).toBeVisible();
+  const history = await openHistory(page);
+  const dates = history.getByRole("row").locator("td:first-child");
+  await expect(dates).toHaveText(["30 Jun 2024", "31 Jan 2024"]);
 
-  await page.getByLabel("Value (EUR)").fill("1000");
-  await page.getByLabel("Date").fill("2024-01-31");
-  await page.getByRole("button", { name: "Record value" }).click();
-  await expect(page.getByRole("cell", { name: "31 Jan 2024" })).toBeVisible();
-
-  // Oldest first, whatever order the values were typed in.
-  await expect(page.getByRole("table").getByRole("cell").first()).toHaveText(
-    "31 Jan 2024",
-  );
-
+  await page.keyboard.press("Escape");
   // The headline is the latest value, not the last one typed.
-  await expect(page.getByText("€2,000.00", { exact: true }).first()).toBeVisible();
+  await expect(currentlyWorth(page)).toHaveText("€2,000.00");
 });
 
 test("a second value for the same day replaces the first", async ({ page }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Savings");
-  await page.getByRole("link", { name: "Savings" }).click();
+  await openWallet(page, "Savings");
 
-  await page.getByLabel("Value (EUR)").fill("1000");
-  await page.getByLabel("Date").fill("2024-01-31");
-  await page.getByRole("button", { name: "Record value" }).click();
-  await expect(page.getByRole("cell", { name: "€1,000.00" })).toBeVisible();
+  await recordValue(page, "1000", { date: "2024-01-31" });
+  await recordValue(page, "1100", { date: "2024-01-31" });
 
-  await page.getByLabel("Value (EUR)").fill("1100");
-  await page.getByLabel("Date").fill("2024-01-31");
-  await page.getByRole("button", { name: "Record value" }).click();
+  const history = await openHistory(page);
+  await expect(history.getByRole("row")).toHaveCount(2); // header plus one row
+  await expect(history).toContainText("€1,100.00");
+});
 
-  await expect(page.getByRole("cell", { name: "€1,100.00" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "31 Jan 2024" })).toHaveCount(1);
+/**
+ * The correction the append-only rule never actually allowed: a figure typed
+ * against the wrong day, fixed in place rather than buried under a later one.
+ */
+test("a past snapshot can be corrected in the History modal", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Savings");
+  await openWallet(page, "Savings");
+
+  await recordValue(page, "1000", { date: "2024-01-31" });
+  await recordValue(page, "2000", { date: "2024-06-30" });
+
+  const history = await openHistory(page);
+  await history
+    .getByRole("row")
+    .filter({ hasText: "31 Jan 2024" })
+    .getByRole("button", { name: "Edit" })
+    .click();
+
+  await history.getByLabel(/^Value/).fill("1250.75");
+  await history.getByRole("button", { name: "Save correction" }).click();
+
+  await expect(history).toContainText("€1,250.75");
+  await expect(history).not.toContainText("€1,000.00");
+
+  // The newest figure is untouched, so the headline has not moved.
+  await page.keyboard.press("Escape");
+  await expect(currentlyWorth(page)).toHaveText("€2,000.00");
+});
+
+test("moving a snapshot onto an occupied day is refused by name", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Savings");
+  await openWallet(page, "Savings");
+
+  await recordValue(page, "1000", { date: "2024-01-31" });
+  await recordValue(page, "2000", { date: "2024-02-29" });
+
+  const history = await openHistory(page);
+  await history
+    .getByRole("row")
+    .filter({ hasText: "31 Jan 2024" })
+    .getByRole("button", { name: "Edit" })
+    .click();
+
+  await history.getByLabel("Date").fill("2024-02-29");
+  await history.getByRole("button", { name: "Save correction" }).click();
+
+  await expect(history.getByRole("alert")).toContainText("29 Feb 2024");
+  // Both figures survive the refusal.
+  await expect(history).toContainText("€1,000.00");
+  await expect(history).toContainText("€2,000.00");
+});
+
+test("deleting the newest snapshot moves the net worth figure back", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Savings");
+  await openWallet(page, "Savings");
+
+  await recordValue(page, "1000", { date: "2024-01-31" });
+  await recordValue(page, "2000", { date: "2024-06-30" });
+
+  const history = await openHistory(page);
+  const newest = history.getByRole("row").filter({ hasText: "30 Jun 2024" });
+  await newest.getByRole("button", { name: "Delete" }).click();
+
+  // One confirmation, in the row itself, before anything is removed.
+  await expect(newest).toContainText("Delete?");
+  await newest.getByRole("button", { name: "Yes" }).click();
+
+  await expect(history).not.toContainText("30 Jun 2024");
+  await page.keyboard.press("Escape");
+
+  await page.goto("/dashboard");
+  await expect(netWorth(page)).toHaveText("€1,000.00");
 });
 
 test("archiving hides a wallet without rewriting the past", async ({ page }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Old account");
+  await recordValue(page, "800", { from: walletCard(page, "Old account") });
 
-  await page.getByLabel("New value for Old account").fill("800");
-  await page.getByRole("button", { name: "Save values" }).click();
-  await expect(page.getByText("Recorded 1 value.")).toBeVisible();
+  await walletCard(page, "Old account").getByRole("button", { name: "Archive" }).click();
+  await expect(walletCard(page, "Old account")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Archive" }).first().click();
-  await expect(page.getByRole("heading", { name: "Archived" })).toBeVisible();
-  await expect(page.getByText("Nothing here yet.")).toBeVisible();
+  // Out of the way, not gone: the toggle brings it back into the grid.
+  await page.getByRole("link", { name: "Show archived" }).click();
+  await expect(walletCard(page, "Old account")).toContainText("Archived");
+  await expect(walletCard(page, "Old account")).toContainText("€800.00");
 
   // Still counted: archiving is a display choice, not a deletion.
   await page.goto("/dashboard");
@@ -141,9 +274,7 @@ test("an unknown wallet id is a not-found page, not a crash", async ({ page }) =
 test("one user cannot open another user's wallet", async ({ page, browser }) => {
   await signUpFreshUser(page);
   await createWallet(page, "Private account");
-  await page.getByRole("link", { name: "Private account" }).click();
-  // The click navigates client-side, so wait for it before reading the URL.
-  await expect(page).toHaveURL(/\/wallets\/[^/]+$/);
+  await openWallet(page, "Private account");
   const url = page.url();
 
   const other = await browser.newContext();
