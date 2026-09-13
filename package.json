@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "income:convert": "tsx scripts/income-sheet-to-import.ts",
     "build": "next build",
     "start": "next start",
     "db:up": "podman compose up -d || docker compose up -d",

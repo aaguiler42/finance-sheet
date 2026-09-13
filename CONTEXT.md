@@ -14,7 +14,8 @@ A named place you hold value, in exactly one currency — a current account, a
 brokerage, cash under the mattress, or a debt you owe. Its worth is whatever you
 last said it was. A Wallet you no longer hold is snapshotted to zero and
 archived, never deleted: archiving hides it from today's list without altering
-what you were worth last March.
+what you were worth last March. Deliberately throwing the history away is a
+separate act with a separate name - see Reset.
 _Avoid_: Account (that name belongs to Better Auth's provider table), Balance,
 Pot
 
@@ -76,6 +77,21 @@ _Avoid_: Payment, Debit, Charge, Transaction
 The currency Net Worth and other totals are presented in. EUR or USD; EUR by
 default.
 _Avoid_: Base currency, Home currency
+
+### Starting over
+
+**Reset**:
+Emptying one part of the app on purpose, for good. Reset is defined against
+Archive, and the two are opposites: Archive hides a Wallet and keeps every
+figure it ever held, while Reset removes the figures themselves. Archive is for
+a Wallet you no longer hold; Reset is for a history you no longer want.
+
+Reset grants no power the app did not already have. An Income can be deleted one
+at a time, and so can a Snapshot; a Wallet or a Category with nothing left under
+it is ordinarily deletable. Reset is those permissions exercised in an order
+that leaves no orphan - the records first, then the thing that held them - and
+in one go. Nothing is kept anywhere afterwards: there is no undo and no copy.
+_Avoid_: Clear, Wipe, Delete all, Factory reset
 
 ## Terms deliberately absent
 

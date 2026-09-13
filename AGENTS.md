@@ -84,4 +84,5 @@ remembering:
 ## Before finishing
 
 Run `pnpm check`, `pnpm typecheck`, and `pnpm test`. Run `pnpm test:e2e` too if
-you touched routing, the login form, auth, or anything on the dashboard.
+you touched routing, the login form, auth, the Reset panel on `/settings`, or
+anything on the dashboard.

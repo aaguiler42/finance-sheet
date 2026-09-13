@@ -1,4 +1,5 @@
 import { categoriesRouter } from "@/server/api/routers/categories";
+import { dataRouter } from "@/server/api/routers/data";
 import { importRouter } from "@/server/api/routers/import";
 import { incomeRouter } from "@/server/api/routers/income";
 import { preferencesRouter } from "@/server/api/routers/preferences";
@@ -14,6 +15,7 @@ export const appRouter = createTRPCRouter({
   income: incomeRouter,
   import: importRouter,
   preferences: preferencesRouter,
+  data: dataRouter,
 });
 
 export type AppRouter = typeof appRouter;

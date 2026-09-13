@@ -3,12 +3,20 @@ import { Panel } from "@/app/(app)/_components/ui";
 import { api } from "@/trpc/server";
 import { CategoryManager } from "./category-manager";
 import { DisplayCurrencyForm } from "./display-currency-form";
+import { ResetData } from "./reset-data";
 
-/** The two things that are settings rather than data: how it reads, and what it is called. */
+/**
+ * How it reads, what it is called - and, at the bottom, how to throw it away.
+ *
+ * Reset lives here rather than beside the data it removes: a destructive
+ * control does not belong in the same viewport as the wallet cards it would
+ * delete, and one home means one place to get its confirmation right.
+ */
 export default async function SettingsPage() {
-  const [preferences, tree] = await Promise.all([
+  const [preferences, tree, counts] = await Promise.all([
     api.preferences.get(),
     api.categories.tree(),
+    api.data.counts(),
   ]);
 
   return (
@@ -29,6 +37,13 @@ export default async function SettingsPage() {
           description="Groups hold categories. Income is always filed under a category, never a group."
         >
           <CategoryManager groups={tree} />
+        </Panel>
+
+        <Panel
+          title="Reset data"
+          description="Empties a part of the app for good. Archiving hides a wallet and keeps its figures; this removes the figures themselves."
+        >
+          <ResetData counts={counts} />
         </Panel>
       </main>
     </>
