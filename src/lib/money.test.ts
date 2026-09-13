@@ -6,6 +6,7 @@ import {
   baseToDisplay,
   EUR_PER_USD,
   formatAmountInput,
+  formatBaseCompact,
   formatMoney,
   isCurrency,
   money,
@@ -181,6 +182,26 @@ describe("formatting", () => {
     expect(formatAmountInput(7)).toBe("0.07");
     expect(formatAmountInput(100)).toBe("1.00");
     expect(formatAmountInput(-7)).toBe("-0.07");
+  });
+});
+
+describe("compact formatting for an axis tick", () => {
+  it("shortens a large figure", () => {
+    expect(formatBaseCompact(123_456_700, "EUR")).toBe("€1.2M");
+    expect(formatBaseCompact(700_000, "EUR")).toBe("€7K");
+  });
+
+  it("leaves a small figure legible", () => {
+    expect(formatBaseCompact(0, "EUR")).toBe("€0");
+    expect(formatBaseCompact(45_000, "EUR")).toBe("€450");
+  });
+
+  /** A tick and the tooltip under it must not name different currencies. */
+  it("converts into the display currency, like formatBase does", () => {
+    const inDollars = formatBaseCompact(92_000_000, "USD");
+
+    expect(inDollars.startsWith("$")).toBe(true);
+    expect(inDollars).toBe("$1M");
   });
 });
 

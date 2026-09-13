@@ -4,6 +4,8 @@ import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { errorMessage } from "@/app/(app)/_components/error-message";
+import { Modal } from "@/app/(app)/_components/modal";
 import {
   button,
   ErrorText,
@@ -26,10 +28,14 @@ export interface ImportBatchSummary {
  * Paste three years of earnings in, see exactly what will be saved, and take it
  * all back out again if the columns were read the wrong way round.
  *
- * The preview is not an estimate: the confirm re-runs the same parse on the same
- * text, so what it writes is what the preview showed.
+ * The preview is not an estimate: the confirm re-runs the same parse on the
+ * same text, so what it writes is what the preview showed.
+ *
+ * Wide rather than the default modal width, because the preview is a table of
+ * four columns and a paste nobody can read is a paste nobody can check. Past
+ * batches live in here too, so an undo is found next to the thing it undoes.
  */
-export function ImportPanel({ batches }: { batches: ImportBatchSummary[] }) {
+export function ImportModal({ batches }: { batches: ImportBatchSummary[] }) {
   const router = useRouter();
   const trpc = useTRPC();
   const client = useTRPCClient();
@@ -52,7 +58,7 @@ export function ImportPanel({ batches }: { batches: ImportBatchSummary[] }) {
         setError(null);
         router.refresh();
       },
-      onError: (cause) => setError(cause.message),
+      onError: (cause) => setError(errorMessage(cause)),
     }),
   );
 
@@ -62,7 +68,7 @@ export function ImportPanel({ batches }: { batches: ImportBatchSummary[] }) {
         setImported(null);
         router.refresh();
       },
-      onError: (cause) => setError(cause.message),
+      onError: (cause) => setError(errorMessage(cause)),
     }),
   );
 
@@ -79,107 +85,114 @@ export function ImportPanel({ batches }: { batches: ImportBatchSummary[] }) {
     }
   }
 
+  /**
+   * Closing forgets the draft but not what was imported: the page behind has
+   * already refreshed, and the batch stays undoable from the list below.
+   */
+  function close() {
+    setOpen(false);
+    setText("");
+    setPreview(null);
+    setError(null);
+    setImported(null);
+  }
+
   return (
-    <div className="flex flex-col gap-4">
-      {/*
-        A button rather than a `<details>` disclosure: a summary element is
-        exposed to assistive tech as an unnamed triangle, so the one control
-        that opens the importer would be unreachable by name.
-      */}
-      <button
-        type="button"
-        aria-expanded={open}
-        className="w-fit text-sm font-medium underline"
-        onClick={() => setOpen(!open)}
-      >
-        Import from a spreadsheet
+    <>
+      <button type="button" className={quietButton} onClick={() => setOpen(true)}>
+        Import
       </button>
 
-      {!open ? null : (
-        <>
-          <p className="text-sm opacity-60">
-            Paste rows straight from a spreadsheet: date, amount, category, note. Tabs,
-            commas and semicolons all work, and nothing is saved until you confirm.
-          </p>
+      <Modal
+        open={open}
+        onClose={close}
+        size="wide"
+        title="Import income"
+        description="Paste rows straight from a spreadsheet: date, amount, category, note. Tabs, commas and semicolons all work, and nothing is saved until you confirm."
+      >
+        {open && (
+          <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto">
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              rows={6}
+              aria-label="Rows to import"
+              placeholder={"2024-01-31\t2500.00\tSalary\tJanuary"}
+              className={`${input} w-full font-mono`}
+            />
 
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            rows={6}
-            aria-label="Rows to import"
-            placeholder={"2024-01-31\t2500.00\tSalary\tJanuary"}
-            className={`${input} w-full font-mono`}
-          />
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              className={quietButton}
-              disabled={previewing || text.trim() === ""}
-              onClick={runPreview}
-            >
-              {previewing ? "Reading..." : "Preview"}
-            </button>
-            <ErrorText>{error}</ErrorText>
-          </div>
-
-          {preview && <PreviewTable preview={preview} />}
-
-          {preview && preview.rows.length > 0 && (
-            <div>
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                className={button}
-                disabled={commit.isPending}
-                onClick={() => commit.mutate({ text })}
+                className={quietButton}
+                disabled={previewing || text.trim() === ""}
+                onClick={runPreview}
               >
-                {commit.isPending
-                  ? "Importing..."
-                  : `Import ${preview.rows.length} ${preview.rows.length === 1 ? "row" : "rows"}`}
+                {previewing ? "Reading..." : "Preview"}
               </button>
+
+              {preview && preview.rows.length > 0 && (
+                <button
+                  type="button"
+                  className={button}
+                  disabled={commit.isPending}
+                  onClick={() => commit.mutate({ text })}
+                >
+                  {commit.isPending
+                    ? "Importing..."
+                    : `Import ${preview.rows.length} ${preview.rows.length === 1 ? "row" : "rows"}`}
+                </button>
+              )}
+
+              <ErrorText>{error}</ErrorText>
             </div>
-          )}
 
-          {imported && (
-            <p className="text-sm">
-              Imported {imported.count} {imported.count === 1 ? "row" : "rows"}.{" "}
-              <button
-                type="button"
-                className={linkButton}
-                disabled={undo.isPending}
-                onClick={() => undo.mutate({ id: imported.batchId })}
-              >
-                Undo this import
-              </button>
-            </p>
-          )}
+            {preview && <PreviewTable preview={preview} />}
 
-          {batches.length > 0 && (
-            <div>
-              <h3 className="text-sm font-medium">Previous imports</h3>
-              <ul className="mt-2 flex flex-col gap-1 text-sm">
-                {batches.map((batch) => (
-                  <li key={batch.id} className="flex items-center justify-between gap-4">
-                    <span className="opacity-70">
-                      {batch.rowCount} {batch.rowCount === 1 ? "row" : "rows"} on{" "}
-                      {batch.createdAt.toLocaleDateString("en-IE")}
-                    </span>
-                    <button
-                      type="button"
-                      className={linkButton}
-                      disabled={undo.isPending}
-                      onClick={() => undo.mutate({ id: batch.id })}
+            {imported && (
+              <p className="text-sm">
+                Imported {imported.count} {imported.count === 1 ? "row" : "rows"}.{" "}
+                <button
+                  type="button"
+                  className={linkButton}
+                  disabled={undo.isPending}
+                  onClick={() => undo.mutate({ id: imported.batchId })}
+                >
+                  Undo this import
+                </button>
+              </p>
+            )}
+
+            {batches.length > 0 && (
+              <div className="border-t border-black/10 pt-4 dark:border-white/15">
+                <h3 className="text-sm font-medium">Previous imports</h3>
+                <ul className="mt-2 flex flex-col gap-1 text-sm">
+                  {batches.map((batch) => (
+                    <li
+                      key={batch.id}
+                      className="flex items-center justify-between gap-4"
                     >
-                      Undo
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
-      )}
-    </div>
+                      <span className="opacity-70">
+                        {batch.rowCount} {batch.rowCount === 1 ? "row" : "rows"} on{" "}
+                        {batch.createdAt.toLocaleDateString("en-IE")}
+                      </span>
+                      <button
+                        type="button"
+                        className={linkButton}
+                        disabled={undo.isPending}
+                        onClick={() => undo.mutate({ id: batch.id })}
+                      >
+                        Undo
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }
 

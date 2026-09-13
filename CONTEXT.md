@@ -38,7 +38,10 @@ expressed in the Display Currency.
 
 **Income**:
 A dated record of money you earned, in one currency, filed under one Income
-Category. An Income never changes any Wallet's worth — see docs/adr/0001.
+Category. An Income never changes any Wallet's worth — see docs/adr/0001. A
+month with no Income in it earned nothing, and is a zero rather than a gap:
+this is the opposite of a month with no Snapshot, which means only that you
+never said. Absence is a fact here and an unknown there.
 _Avoid_: Earning, Revenue, Deposit, Credit
 
 **Income Category**:

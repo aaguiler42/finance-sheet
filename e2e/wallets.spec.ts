@@ -245,6 +245,11 @@ test("archiving hides a wallet without rewriting the past", async ({ page }) => 
   await recordValue(page, "800", { from: walletCard(page, "Old account") });
 
   await walletCard(page, "Old account").getByRole("button", { name: "Archive" }).click();
+  // Asked first, by name, before the card leaves the grid.
+  const confirm = page.getByRole("dialog", { name: "Archive wallet?" });
+  await expect(confirm).toContainText("Old account");
+  await confirm.getByRole("button", { name: "Archive" }).click();
+
   await expect(walletCard(page, "Old account")).toHaveCount(0);
 
   // Out of the way, not gone: the toggle brings it back into the grid.
@@ -255,6 +260,55 @@ test("archiving hides a wallet without rewriting the past", async ({ page }) => 
   // Still counted: archiving is a display choice, not a deletion.
   await page.goto("/dashboard");
   await expect(netWorth(page)).toHaveText("€800.00");
+});
+
+/**
+ * Archiving from the grid takes the card out of the page under the pointer, so
+ * it is worth a question - and saying no has to leave the wallet exactly where
+ * it was.
+ */
+test("archiving can be called off and nothing moves", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Current account");
+  const card = walletCard(page, "Current account");
+
+  await card.getByRole("button", { name: "Archive" }).click();
+  const confirm = page.getByRole("dialog", { name: "Archive wallet?" });
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+
+  await expect(confirm).toBeHidden();
+  await expect(card).toBeVisible();
+  await expect(card).not.toContainText("Archived");
+});
+
+/** Unarchiving puts a wallet back into every month's update, so it asks too. */
+test("unarchiving is confirmed from the archived wallet's own page", async ({ page }) => {
+  await signUpFreshUser(page);
+  await createWallet(page, "Old account");
+
+  await walletCard(page, "Old account").getByRole("button", { name: "Archive" }).click();
+  await page
+    .getByRole("dialog", { name: "Archive wallet?" })
+    .getByRole("button", { name: "Archive" })
+    .click();
+  await expect(walletCard(page, "Old account")).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Show archived" }).click();
+  await openWallet(page, "Old account");
+
+  await page.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("button", { name: "Unarchive" }).click();
+  const confirm = page.getByRole("dialog", { name: "Unarchive wallet?" });
+  await confirm.getByRole("button", { name: "Unarchive" }).click();
+
+  // The dialog closes only once the server has agreed; navigating before that
+  // would abandon the request in flight.
+  await expect(confirm).toBeHidden();
+
+  // Back in the plain grid, without the archived toggle.
+  await page.goto("/wallets");
+  await expect(walletCard(page, "Old account")).toBeVisible();
+  await expect(walletCard(page, "Old account")).not.toContainText("Archived");
 });
 
 /**

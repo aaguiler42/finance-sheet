@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { errorMessage } from "@/app/(app)/_components/error-message";
-import { Modal, ModalActions } from "@/app/(app)/_components/modal";
+import { ConfirmModal, Modal, ModalActions } from "@/app/(app)/_components/modal";
 import { button, ErrorText, input, quietButton } from "@/app/(app)/_components/ui";
 import type { Currency } from "@/lib/money";
 import { useTRPC } from "@/trpc/react";
+import { archiveConfirmCopy } from "../archive-confirm";
 import { SnapshotHistory, type SnapshotRow } from "./snapshot-history";
 
 /**
@@ -38,8 +39,11 @@ export function WalletMenu({
   const menu = useRef<HTMLDivElement>(null);
 
   const [menuOpen, setMenuOpen] = useState(false);
-  const [open, setOpen] = useState<"none" | "rename" | "history">("none");
+  const [open, setOpen] = useState<"none" | "rename" | "history" | "archive">("none");
   const [error, setError] = useState<string | null>(null);
+  // Kept apart from `error` so a refusal reads inside the dialog that asked,
+  // and not a second time under a menu the user has moved on from.
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
   // A menu that stays open once the pointer has moved on is a menu in the way.
   useEffect(() => {
@@ -63,8 +67,11 @@ export function WalletMenu({
 
   const setArchived = useMutation(
     trpc.wallets.setArchived.mutationOptions({
-      onSuccess: () => router.refresh(),
-      onError: (cause) => setError(errorMessage(cause)),
+      onSuccess: () => {
+        setOpen("none");
+        router.refresh();
+      },
+      onError: (cause) => setArchiveError(errorMessage(cause)),
     }),
   );
 
@@ -74,6 +81,8 @@ export function WalletMenu({
       onError: (cause) => setError(errorMessage(cause)),
     }),
   );
+
+  const archiveCopy = archiveConfirmCopy(name, archived);
 
   const item =
     "w-full px-3 py-2 text-left text-sm hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10";
@@ -121,11 +130,11 @@ export function WalletMenu({
               disabled={setArchived.isPending}
               onClick={() => {
                 setMenuOpen(false);
-                setError(null);
-                setArchived.mutate({ id, archived: !archived });
+                setArchiveError(null);
+                setOpen("archive");
               }}
             >
-              {archived ? "Unarchive" : "Archive"}
+              {archiveCopy.confirmLabel}
             </button>
             {/* Only ever offered for a wallet nothing was recorded against. The
                 server refuses the rest, and that refusal is surfaced below. */}
@@ -149,6 +158,14 @@ export function WalletMenu({
 
       <ErrorText>{error}</ErrorText>
 
+      <ConfirmModal
+        open={open === "archive"}
+        onClose={() => setOpen("none")}
+        onConfirm={() => setArchived.mutate({ id, archived: !archived })}
+        pending={setArchived.isPending}
+        error={archiveError}
+        {...archiveCopy}
+      />
       <RenameWalletModal
         id={id}
         name={name}

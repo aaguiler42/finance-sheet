@@ -78,6 +78,18 @@ export async function signedIn(prefix = "user"): Promise<TestUser> {
   return { email, id: response.user.id, caller };
 }
 
+/**
+ * Every record a user has, flattened back out of `income.history`.
+ *
+ * The history is years over months over records, which is right for the page
+ * and awkward for a test that only wants to know what was written. This is the
+ * one place that unpacking is spelled out.
+ */
+export async function allIncome(user: TestUser) {
+  const history = await user.caller.income.history();
+  return history.years.flatMap((year) => year.months.flatMap((month) => month.records));
+}
+
 /** The caller an anonymous request would get. */
 export async function anonymous() {
   return appRouter.createCaller(await createTRPCContext({ headers: new Headers() }));

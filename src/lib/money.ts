@@ -224,6 +224,24 @@ export function formatBase(
   return formatMoney(baseToDisplay(baseAmount, display), display, options);
 }
 
+/**
+ * A base-currency figure shortened to fit an axis tick: €1,234,567 becomes
+ * €1.2M. The conversion is the same one `formatBase` makes, so a tick and the
+ * tooltip under the cursor cannot name different currencies.
+ */
+export function formatBaseCompact(baseAmount: number, display: Currency): string {
+  return new Intl.NumberFormat(FORMAT_LOCALE, {
+    style: "currency",
+    currency: display,
+    notation: "compact",
+    // Both bounds, because a currency's own two digits are the default minimum
+    // and engines disagree about what `maximumFractionDigits` alone does to it:
+    // the same call renders €7K in Chrome and €7.0K in Node.
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(baseToDisplay(baseAmount, display) / MINOR_UNITS_PER_UNIT);
+}
+
 /** The plain decimal an amount should appear as inside a text input. */
 export function formatAmountInput(amount: number): string {
   const sign = amount < 0 ? "-" : "";

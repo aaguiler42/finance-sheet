@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { anonymous, deleteCreatedUsers, signedIn, type TestUser } from "@/test/helpers";
+import {
+  allIncome,
+  anonymous,
+  deleteCreatedUsers,
+  signedIn,
+  type TestUser,
+} from "@/test/helpers";
 
 /**
  * Paste import against real Postgres: the full preview, confirm and undo cycle.
@@ -48,7 +54,7 @@ describe("preview", () => {
 
     await user.caller.import.preview({ text: PASTE });
 
-    await expect(user.caller.income.list()).resolves.toMatchObject({ count: 0 });
+    await expect(allIncome(user)).resolves.toEqual([]);
     await expect(user.caller.import.batches()).resolves.toEqual([]);
   });
 
@@ -99,10 +105,9 @@ describe("commit", () => {
     });
 
     expect(result).toMatchObject({ imported: 3, skipped: 1 });
-    await expect(user.caller.income.list()).resolves.toMatchObject({
-      count: 3,
-      total: 1_000_000,
-    });
+    const written = await allIncome(user);
+    expect(written).toHaveLength(3);
+    expect(written.reduce((total, row) => total + row.baseAmount, 0)).toBe(1_000_000);
   });
 
   it("records the import as a batch of the right size", async () => {
@@ -124,9 +129,9 @@ describe("commit", () => {
       text: "2024-01-31\t1000\tUSD\tSalary\tPaid in dollars",
     });
 
-    const { rows } = await user.caller.income.list();
-    expect(rows[0]).toMatchObject({ currency: "USD" });
-    expect(rows[0].rate).toBeLessThan(1);
+    const [row] = await allIncome(user);
+    expect(row).toMatchObject({ currency: "USD" });
+    expect(row.baseAmount).toBeLessThan(row.amount);
   });
 
   it("refuses a paste with nothing importable in it", async () => {
@@ -150,8 +155,7 @@ describe("commit", () => {
     expect(result.imported).toBe(preview.rows.length);
     expect(result.skipped).toBe(preview.rejected.length);
 
-    const list = await user.caller.income.list();
-    expect(list.count).toBe(preview.rows.length);
+    await expect(allIncome(user)).resolves.toHaveLength(preview.rows.length);
   });
 });
 
@@ -174,14 +178,14 @@ describe("undo", () => {
     });
 
     const second = await user.caller.import.commit({ text: PASTE });
-    expect(await user.caller.income.list()).toMatchObject({ count: 5 });
+    await expect(allIncome(user)).resolves.toHaveLength(5);
 
     const undone = await user.caller.import.undo({ id: second.batchId });
 
     expect(undone.removed).toBe(3);
-    const list = await user.caller.income.list();
-    expect(list.count).toBe(2);
-    expect(list.rows.map((row) => row.id).sort()).toEqual(
+    const left = await allIncome(user);
+    expect(left).toHaveLength(2);
+    expect(left.map((row) => row.id).sort()).toEqual(
       [byHand.id, ...(await idsOfBatch(user, first.batchId))].sort(),
     );
   });
@@ -245,7 +249,7 @@ describe("ownership", () => {
       code: "NOT_FOUND",
     });
 
-    await expect(owner.caller.income.list()).resolves.toMatchObject({ count: 3 });
+    await expect(allIncome(owner)).resolves.toHaveLength(3);
   });
 });
 

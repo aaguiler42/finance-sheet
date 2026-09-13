@@ -63,7 +63,7 @@ src/
 │   ├── (app)/              # authenticated routes; layout redirects to /login
 │   │   ├── dashboard/      # net worth, trend, recent income
 │   │   ├── wallets/        # card grid, modals, and [id] chart + history
-│   │   ├── income/         # list, filters, add, paste import
+│   │   ├── income/         # charts, year accordion, record/edit/import modals
 │   │   └── settings/       # display currency, category tree
 │   ├── (auth)/login/
 │   └── api/
@@ -73,6 +73,8 @@ src/
 │   ├── money.ts            # minor units, the rate constant, parsing, formatting
 │   ├── net-worth.ts        # what the wallets add up to, now or at any date
 │   ├── category-tree.ts    # flat rows to a two-level tree with rollups
+│   ├── income-periods.ts   # earnings grouped into years, months and chart series
+│   ├── chart-palette.ts    # six hues, by Category Group creation order
 │   ├── paste-parser.ts     # pasted spreadsheet text to income rows
 │   └── dates.ts            # calendar days as YYYY-MM-DD strings
 ├── server/

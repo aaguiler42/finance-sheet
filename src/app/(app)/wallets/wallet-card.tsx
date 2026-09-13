@@ -95,7 +95,7 @@ export function WalletCard({
           triggerClassName={quietButton}
         />
         <div className="flex items-center gap-4">
-          <ArchiveToggle id={wallet.id} archived={wallet.archived} />
+          <ArchiveToggle id={wallet.id} name={wallet.name} archived={wallet.archived} />
           <Link href={`/wallets/${wallet.id}`} className="opacity-70 hover:opacity-100">
             Details →
           </Link>

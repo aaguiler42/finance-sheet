@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { buildCategoryTree } from "@/lib/category-tree";
+import { todayIso } from "@/lib/dates";
+import { buildIncomeHistory } from "@/lib/income-periods";
 import { rateToBase, toBase } from "@/lib/money";
 import { amountInput, currencyInput, idInput, isoDateInput } from "@/server/api/schemas";
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
@@ -43,84 +44,37 @@ async function ownedIncome(db: Db, userId: string, id: string) {
   return found;
 }
 
-const filters = z
-  .object({
-    from: isoDateInput.optional(),
-    to: isoDateInput.optional(),
-    categoryId: idInput.optional(),
-    groupId: idInput.optional(),
-  })
-  .optional();
-
 export const incomeRouter = createTRPCRouter({
   /**
-   * The filtered list, most recent first, with the totals that go beside it.
-   * Totals come back per category and rolled up per group, both computed from
-   * exactly the rows the filter selected.
+   * Everything earned, arranged into years, months and records, with the two
+   * chart series that go above them.
+   *
+   * One query and one pure helper rather than one procedure per panel: a year
+   * header's total, a month row's total and a bar's height are the same
+   * arithmetic, and two procedures computing them separately would eventually
+   * disagree. A few hundred rows is less than the old filtered list shipped, so
+   * there is nothing here to paginate yet.
    */
-  list: protectedProcedure.input(filters).query(async ({ ctx, input }) => {
-    const [groups, categories] = await Promise.all([
+  history: protectedProcedure.query(async ({ ctx }) => {
+    const [groups, categories, rows] = await Promise.all([
       ctx.db
         .select()
         .from(categoryGroup)
         .where(eq(categoryGroup.userId, ctx.user.id))
-        .orderBy(asc(categoryGroup.name)),
+        // Creation order, because that is what a Group's hue is derived from -
+        // see docs/adr/0004. The id breaks ties between groups created in the
+        // same instant, which a seeded account has plenty of, so a hue cannot
+        // change between two reads of the same data.
+        .orderBy(asc(categoryGroup.createdAt), asc(categoryGroup.id)),
+      ctx.db.select().from(incomeCategory).where(eq(incomeCategory.userId, ctx.user.id)),
       ctx.db
         .select()
-        .from(incomeCategory)
-        .where(eq(incomeCategory.userId, ctx.user.id))
-        .orderBy(asc(incomeCategory.name)),
+        .from(income)
+        .where(eq(income.userId, ctx.user.id))
+        .orderBy(desc(income.date), desc(income.createdAt)),
     ]);
 
-    const conditions = [eq(income.userId, ctx.user.id)];
-    if (input?.from) conditions.push(gte(income.date, input.from));
-    if (input?.to) conditions.push(lte(income.date, input.to));
-    if (input?.categoryId) conditions.push(eq(income.categoryId, input.categoryId));
-    if (input?.groupId) {
-      const inGroup = categories
-        .filter((category) => category.groupId === input.groupId)
-        .map((category) => category.id);
-
-      // An empty group selects nothing, which `inArray` with an empty list would
-      // not express, so short-circuit with an id that cannot exist.
-      conditions.push(inArray(income.categoryId, inGroup.length > 0 ? inGroup : [""]));
-    }
-
-    const rows = await ctx.db
-      .select()
-      .from(income)
-      .where(and(...conditions))
-      .orderBy(desc(income.date), desc(income.createdAt));
-
-    const byCategory = new Map<string, number>();
-    let total = 0;
-    for (const row of rows) {
-      const base = toBase(row.amount, row.rate);
-      byCategory.set(row.categoryId, (byCategory.get(row.categoryId) ?? 0) + base);
-      total += base;
-    }
-
-    const namesById = new Map(categories.map((category) => [category.id, category]));
-    const groupsById = new Map(groups.map((group) => [group.id, group]));
-
-    return {
-      /** Category names travel with each row so an archived one still displays. */
-      rows: rows.map((row) => {
-        const category = namesById.get(row.categoryId);
-        return {
-          ...row,
-          baseAmount: toBase(row.amount, row.rate),
-          categoryName: category?.name ?? "Unknown",
-          groupName: category ? (groupsById.get(category.groupId)?.name ?? "") : "",
-        };
-      }),
-      /** Only groups and categories that the filtered rows actually used. */
-      totals: buildCategoryTree(groups, categories, byCategory).filter(
-        (group) => group.total !== 0 || group.categories.some((c) => c.total !== 0),
-      ),
-      total,
-      count: rows.length,
-    };
+    return buildIncomeHistory(rows, categories, groups, { today: todayIso() });
   }),
 
   /** The dashboard's "what have I earned lately" panel. */

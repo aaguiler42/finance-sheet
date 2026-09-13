@@ -8,6 +8,13 @@
 
 export type IsoDate = string;
 
+/**
+ * A calendar month as `YYYY-MM`. The same string trick as `IsoDate`: months
+ * sort, compare and group as plain strings, and a bucket keyed by one cannot
+ * drift across a timezone the way a `Date` pointing at the 1st can.
+ */
+export type IsoMonth = string;
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
@@ -69,12 +76,46 @@ export function addMonths(value: IsoDate, months: number): IsoDate {
   return toIsoDate(targetYear, targetMonth, Math.min(day, lastDay));
 }
 
-/** Just the month, for labelling a chart axis: "Mar 24". */
-export function formatIsoMonth(value: IsoDate): string {
-  const [year, month] = value.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("en-IE", {
+/** The month a date falls in. */
+export function monthOf(value: IsoDate): IsoMonth {
+  return value.slice(0, 7);
+}
+
+/** The year a date falls in. */
+export function yearOf(value: IsoDate): number {
+  return Number(value.slice(0, 4));
+}
+
+/** The month after `month`, rolling over the year. */
+export function nextMonth(month: IsoMonth): IsoMonth {
+  const [year, index] = month.split("-").map(Number);
+  return index === 12
+    ? `${String(year + 1).padStart(4, "0")}-01`
+    : `${String(year).padStart(4, "0")}-${String(index + 1).padStart(2, "0")}`;
+}
+
+/** Just the month, for a chart axis with a few characters to spare: "Mar 24". */
+export function formatMonthShort(month: IsoMonth): string {
+  const [year, index] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, index - 1, 1)).toLocaleDateString("en-IE", {
     month: "short",
     year: "2-digit",
     timeZone: "UTC",
   });
+}
+
+/**
+ * The month spelled out, for a row that already sits under its year: "March".
+ */
+export function formatMonthLong(month: IsoMonth): string {
+  const [year, index] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, index - 1, 1)).toLocaleDateString("en-IE", {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
+/** Just the month, for labelling a chart axis: "Mar 24". */
+export function formatIsoMonth(value: IsoDate): string {
+  return formatMonthShort(monthOf(value));
 }

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { anonymous, deleteCreatedUsers, signedIn, type TestUser } from "@/test/helpers";
+import {
+  allIncome,
+  anonymous,
+  deleteCreatedUsers,
+  signedIn,
+  type TestUser,
+} from "@/test/helpers";
 
 /**
  * The Income Category vocabulary against real Postgres.
@@ -149,7 +155,7 @@ describe("deleting a category", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     // And the income is still there.
-    await expect(user.caller.income.list()).resolves.toMatchObject({ count: 1 });
+    await expect(allIncome(user)).resolves.toHaveLength(1);
   });
 });
 

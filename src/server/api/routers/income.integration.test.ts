@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { EUR_PER_USD } from "@/lib/money";
-import { anonymous, deleteCreatedUsers, signedIn, type TestUser } from "@/test/helpers";
+import {
+  allIncome,
+  anonymous,
+  deleteCreatedUsers,
+  signedIn,
+  type TestUser,
+} from "@/test/helpers";
 
 /**
  * Income against real Postgres.
@@ -121,8 +127,8 @@ describe("recording income", () => {
 
     expect(created.rate).toBe(EUR_PER_USD);
 
-    const list = await user.caller.income.list();
-    expect(list.rows[0].baseAmount).toBe(Math.round(100_000 * EUR_PER_USD));
+    const [row] = await allIncome(user);
+    expect(row.baseAmount).toBe(Math.round(100_000 * EUR_PER_USD));
   });
 
   it("stores a rate of 1 on a base-currency record", async () => {
@@ -142,14 +148,16 @@ describe("recording income", () => {
   it("rejects an anonymous caller", async () => {
     const caller = await anonymous();
 
-    await expect(caller.income.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.income.history()).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
     await expect(caller.income.recent()).rejects.toMatchObject({
       code: "UNAUTHORIZED",
     });
   });
 });
 
-describe("listing, filtering and totals", () => {
+describe("the history", () => {
   async function withIncome(user: TestUser) {
     const vocabulary = await withVocabulary(user);
 
@@ -181,90 +189,79 @@ describe("listing, filtering and totals", () => {
     return vocabulary;
   }
 
-  it("lists everything, most recent first", async () => {
-    const user = await signedIn("income-list");
+  /**
+   * The arithmetic is unit-tested in `income-periods.test.ts` without a
+   * database. What these prove is the wiring: that the query feeds the helper
+   * every row, every category and every group, in the order it needs them.
+   */
+  it("arranges every record into years and months, newest first", async () => {
+    const user = await signedIn("income-history");
     await withIncome(user);
 
-    const list = await user.caller.income.list();
+    const history = await user.caller.income.history();
 
-    expect(list.count).toBe(4);
-    expect(list.rows.map((row) => row.date)).toEqual([
-      "2024-03-01",
-      "2024-02-29",
-      "2024-01-31",
-      "2023-12-15",
+    expect(history.years.map((year) => year.year)).toEqual([2024, 2023]);
+    expect(history.years[0].count).toBe(3);
+    expect(history.years[0].total).toBe(512_000);
+    expect(history.years[0].months.map((month) => month.month)).toEqual([
+      "2024-03",
+      "2024-02",
+      "2024-01",
+    ]);
+    expect(history.years[1].total).toBe(500_000);
+  });
+
+  it("names the category and group each record is filed under", async () => {
+    const user = await signedIn("income-history-names");
+    await withIncome(user);
+
+    const [newest] = await allIncome(user);
+
+    expect(newest).toMatchObject({
+      date: "2024-03-01",
+      categoryName: "Dividends",
+      groupName: "Investments",
+    });
+  });
+
+  it("charts every month between the first record and this one", async () => {
+    const user = await signedIn("income-history-series");
+    await withIncome(user);
+
+    const { monthly } = await user.caller.income.history();
+
+    expect(monthly[0]).toEqual({ month: "2023-12", total: 500_000 });
+    // Nothing was earned in April 2024, which is a zero rather than a gap.
+    expect(monthly.find((point) => point.month === "2024-04")).toEqual({
+      month: "2024-04",
+      total: 0,
+    });
+  });
+
+  it("gives each earning group a hue, in creation order", async () => {
+    const user = await signedIn("income-history-hues");
+    await withIncome(user);
+
+    const { groups } = await user.caller.income.history();
+
+    // Employment was created first, so it holds the first hue however the
+    // groups happen to be named.
+    expect(groups.map((group) => [group.name, group.hue])).toEqual([
+      ["Employment", 0],
+      ["Investments", 1],
     ]);
   });
 
-  it("filters by date range", async () => {
-    const user = await signedIn("income-filter-date");
+  it("states each group's share of a year, with the figure beside it", async () => {
+    const user = await signedIn("income-history-composition");
     await withIncome(user);
 
-    const list = await user.caller.income.list({ from: "2024-01-01", to: "2024-02-29" });
+    const { composition } = await user.caller.income.history();
+    const year = composition.find((entry) => entry.year === 2024);
+    const investments = year?.segments.find((segment) => segment.amount === 12_000);
 
-    expect(list.count).toBe(2);
-    expect(list.total).toBe(500_000);
-  });
-
-  it("filters by category", async () => {
-    const user = await signedIn("income-filter-category");
-    const { salary } = await withIncome(user);
-
-    const list = await user.caller.income.list({ categoryId: salary.id });
-
-    expect(list.count).toBe(2);
-    expect(list.rows.every((row) => row.categoryName === "Salary")).toBe(true);
-  });
-
-  it("filters by group, which means all of its categories", async () => {
-    const user = await signedIn("income-filter-group");
-    const { employment } = await withIncome(user);
-
-    const list = await user.caller.income.list({ groupId: employment.id });
-
-    expect(list.count).toBe(3);
-    expect(list.total).toBe(1_000_000);
-  });
-
-  it("answers how much salary was earned in a year", async () => {
-    const user = await signedIn("income-filter-both");
-    const { salary } = await withIncome(user);
-
-    const list = await user.caller.income.list({
-      categoryId: salary.id,
-      from: "2024-01-01",
-      to: "2024-12-31",
-    });
-
-    expect(list.total).toBe(500_000);
-  });
-
-  it("totals per category and rolls them up per group", async () => {
-    const user = await signedIn("income-totals");
-    await withIncome(user);
-
-    const { totals } = await user.caller.income.list();
-    const employment = totals.find((group) => group.name === "Employment");
-    const investments = totals.find((group) => group.name === "Investments");
-
-    expect(employment?.total).toBe(1_000_000);
-    expect(
-      employment?.categories.find((category) => category.name === "Salary")?.total,
-    ).toBe(500_000);
-    expect(
-      employment?.categories.find((category) => category.name === "Bonus")?.total,
-    ).toBe(500_000);
-    expect(investments?.total).toBe(12_000);
-  });
-
-  it("computes totals from exactly the filtered rows", async () => {
-    const user = await signedIn("income-totals-filtered");
-    await withIncome(user);
-
-    const { totals, total } = await user.caller.income.list({ from: "2024-01-01" });
-
-    expect(total).toBe(512_000);
-    expect(totals.find((group) => group.name === "Employment")?.total).toBe(500_000);
+    expect(year?.total).toBe(512_000);
+    expect(investments?.share).toBeCloseTo((12_000 / 512_000) * 100, 6);
   });
 
   it("still shows the category name for income filed under an archived one", async () => {
@@ -273,9 +270,23 @@ describe("listing, filtering and totals", () => {
 
     await user.caller.categories.setCategoryArchived({ id: salary.id, archived: true });
 
-    const list = await user.caller.income.list({ categoryId: salary.id });
-    expect(list.rows[0].categoryName).toBe("Salary");
-    expect(list.rows[0].groupName).toBe("Employment");
+    const records = await allIncome(user);
+    const filed = records.find((record) => record.categoryId === salary.id);
+
+    expect(filed).toMatchObject({ categoryName: "Salary", groupName: "Employment" });
+  });
+
+  it("has nothing at all to show for a user who has recorded nothing", async () => {
+    const user = await signedIn("income-history-empty");
+    await withVocabulary(user);
+
+    await expect(user.caller.income.history()).resolves.toEqual({
+      years: [],
+      monthly: [],
+      yearly: [],
+      composition: [],
+      groups: [],
+    });
   });
 
   it("returns the most recent few for the dashboard", async () => {
@@ -352,7 +363,7 @@ describe("editing and deleting", () => {
 
     await user.caller.income.delete({ id: created.id });
 
-    await expect(user.caller.income.list()).resolves.toMatchObject({ count: 0 });
+    await expect(allIncome(user)).resolves.toEqual([]);
   });
 });
 
@@ -368,10 +379,7 @@ describe("ownership", () => {
       date: "2024-01-31",
     });
 
-    await expect(stranger.caller.income.list()).resolves.toMatchObject({
-      count: 0,
-      total: 0,
-    });
+    await expect(allIncome(stranger)).resolves.toEqual([]);
     await expect(stranger.caller.income.recent()).resolves.toEqual([]);
   });
 
@@ -400,8 +408,8 @@ describe("ownership", () => {
       code: "NOT_FOUND",
     });
 
-    const list = await owner.caller.income.list();
-    expect(list.rows[0]).toMatchObject({ amount: 250_000, note: "Theirs" });
+    const [theirsStill] = await allIncome(owner);
+    expect(theirsStill).toMatchObject({ amount: 250_000, note: "Theirs" });
   });
 
   it("does not file income under another user's category", async () => {
@@ -418,6 +426,6 @@ describe("ownership", () => {
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    await expect(owner.caller.income.list()).resolves.toMatchObject({ count: 0 });
+    await expect(allIncome(owner)).resolves.toEqual([]);
   });
 });
