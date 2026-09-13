@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_IMPORT_GROUP, splitQualifiedName } from "./category-tree";
 import {
   detectCurrency,
   type ParseOptions,
@@ -8,8 +9,11 @@ import {
 } from "./paste-parser";
 
 /**
- * Categories are resolved by an injected lookup, so these tests can focus on
+ * Categories are matched by an injected lookup, so these tests can focus on
  * the thing that is hard: turning arbitrary pasted text into rows.
+ *
+ * The stub answers the way `matchCategoryName` does - known, missing, or
+ * claimed by two groups at once - without needing a vocabulary to match against.
  */
 const KNOWN: Record<string, string> = {
   salary: "c-salary",
@@ -17,8 +21,17 @@ const KNOWN: Record<string, string> = {
   "employment / salary": "c-salary",
 };
 
+const AMBIGUOUS = new Set(["rsus"]);
+
 const options: ParseOptions = {
-  resolveCategory: (name: string) => KNOWN[name.trim().toLowerCase()] ?? null,
+  matchCategory: (text: string) => {
+    const id = KNOWN[text.trim().toLowerCase()];
+    if (id) return { kind: "existing", id };
+    if (AMBIGUOUS.has(text.trim().toLowerCase())) return { kind: "ambiguous" };
+
+    const { group, name } = splitQualifiedName(text);
+    return { kind: "new", group: group ?? DEFAULT_IMPORT_GROUP, name };
+  },
 };
 
 function parse(text: string, extra: Partial<ParseOptions> = {}) {
@@ -267,7 +280,7 @@ describe("bad rows", () => {
     "2024-01-31\t2500\tSalary\tGood",
     "not-a-date\t2500\tSalary\tBad date",
     "2024-02-29\tnot-a-number\tSalary\tBad amount",
-    "2024-03-31\t2500\tLottery\tUnknown category",
+    "2024-03-31\t2500\tRSUs\tAmbiguous category",
     "2024-04-30\t2500\t\tNo category",
     "2024-05-31\t3000\tBonus\tAlso good",
   ].join("\n");
@@ -285,7 +298,7 @@ describe("bad rows", () => {
     expect(result.rejected.map((row) => row.lineNumber)).toEqual([3, 4, 5, 6]);
     expect(result.rejected[0].reason).toMatch(/date/i);
     expect(result.rejected[1].reason).toMatch(/amount/i);
-    expect(result.rejected[2].reason).toMatch(/Lottery/);
+    expect(result.rejected[2].reason).toMatch(/RSUs/);
     expect(result.rejected[3].reason).toMatch(/category/i);
   });
 
@@ -299,6 +312,191 @@ describe("bad rows", () => {
     const result = parse("\t2500\tSalary");
 
     expect(result.rejected[0].reason).toBe("No date");
+  });
+});
+
+describe("categories the vocabulary does not have yet", () => {
+  it("keeps the row and reports the category the commit will create", () => {
+    const result = parse("2024-01-31\t2500\tSueldo\tJanuary");
+
+    expect(result.rejected).toEqual([]);
+    expect(result.rows[0]).toMatchObject({
+      categoryId: null,
+      categoryName: "Sueldo",
+      newCategory: { group: DEFAULT_IMPORT_GROUP, name: "Sueldo" },
+    });
+    expect(result.newCategories).toEqual([
+      { group: DEFAULT_IMPORT_GROUP, name: "Sueldo" },
+    ]);
+  });
+
+  it("puts a qualified name in the group it names", () => {
+    const result = parse("2024-01-31\t2500\tTrabajo / Sueldo");
+
+    expect(result.newCategories).toEqual([{ group: "Trabajo", name: "Sueldo" }]);
+  });
+
+  it("reports one new category however many rows mention it", () => {
+    const result = parse(
+      ["2024-01-31\t2500\tSueldo", "2024-02-29\t2500\tSueldo"].join("\n"),
+    );
+
+    expect(result.rows).toHaveLength(2);
+    expect(result.newCategories).toHaveLength(1);
+    // Both rows point at the same category, so the commit creates it once.
+    expect(result.rows[0].newCategory).toBe(result.rows[1].newCategory);
+  });
+
+  it("treats a bare name and its qualified form as the same new category", () => {
+    const result = parse(
+      ["2024-01-31\t2500\tImported / Sueldo", "2024-02-29\t2500\tSueldo"].join("\n"),
+    );
+
+    expect(result.newCategories).toEqual([
+      { group: DEFAULT_IMPORT_GROUP, name: "Sueldo" },
+    ]);
+  });
+
+  it("reports nothing to create when every category already exists", () => {
+    const result = parse("2024-01-31\t2500\tSalary");
+
+    expect(result.rows[0]).toMatchObject({ categoryId: "c-salary", newCategory: null });
+    expect(result.newCategories).toEqual([]);
+  });
+
+  it("refuses a bare name two groups claim instead of creating a third", () => {
+    const result = parse("2024-01-31\t2500\tRSUs");
+
+    expect(result.rows).toEqual([]);
+    expect(result.newCategories).toEqual([]);
+    expect(result.rejected[0].reason).toMatch(/Group \/ Category/);
+  });
+});
+
+describe("a year grid", () => {
+  /** Months down, categories across, one block per year - and the sheet's own sums. */
+  const GRID = [
+    "2023\tSueldo\tParo\tTOTAL",
+    "enero\t1.938,88 \u20ac\t\t1.938,88 \u20ac",
+    "febrero\t\t480,00 \u20ac\t480,00 \u20ac",
+    "SUMA\t1.938,88 \u20ac\t480,00 \u20ac\t2.418,88 \u20ac",
+    "\t\t\t",
+    "2024\tRenta\tSueldo\tTOTAL",
+    "enero\t-121,25 \u20ac\t2.114,28 \u20ac\t1.993,03 \u20ac",
+    "febrero\t\t0,00 \u20ac\t0,00 \u20ac",
+    "Media\t-121,25 \u20ac\t1.057,14 \u20ac\t996,52 \u20ac",
+  ].join("\n");
+
+  it("is recognised and read as a grid", () => {
+    const result = parse(GRID);
+
+    expect(result.problem).toBeNull();
+    expect(result.layout).toBe("grid");
+    expect(result.rejected).toEqual([]);
+  });
+
+  it("makes one row per month and category that has a figure", () => {
+    const result = parse(GRID);
+
+    expect(result.rows.map((row) => [row.date, row.categoryName, row.amount])).toEqual([
+      ["2023-01-31", "Sueldo", 193_888],
+      ["2023-02-28", "Paro", 48_000],
+      ["2024-01-31", "Renta", -12_125],
+      ["2024-01-31", "Sueldo", 211_428],
+    ]);
+  });
+
+  it("dates each month at its last day, leap years included", () => {
+    const result = parse(GRID);
+
+    expect(result.rows[1].date).toBe("2023-02-28");
+    expect(parse(["2024\tSueldo", "febrero\t100"].join("\n")).rows[0].date).toBe(
+      "2024-02-29",
+    );
+  });
+
+  it("ignores the figures the sheet worked out for itself", () => {
+    // The TOTAL column, SUMA and Media: importing them would count a year twice.
+    const result = parse(GRID);
+
+    expect(result.rows).toHaveLength(4);
+    expect(result.rows.some((row) => row.categoryName.toLowerCase() === "total")).toBe(
+      false,
+    );
+    expect(result.rows.reduce((total, row) => total + row.amount, 0)).toBe(441_191);
+  });
+
+  it("reads each block's own column order", () => {
+    // 2023 puts Sueldo first and 2024 puts Renta there.
+    const result = parse(GRID);
+
+    expect(result.rows[2]).toMatchObject({ categoryName: "Renta", amount: -12_125 });
+    expect(result.rows[3]).toMatchObject({ categoryName: "Sueldo", amount: 211_428 });
+  });
+
+  it("skips a zero without making a row of it", () => {
+    const result = parse(GRID);
+
+    expect(result.rows.some((row) => row.amount === 0)).toBe(false);
+  });
+
+  it("takes the currency from the symbol in the cell", () => {
+    expect(parse(GRID).rows.every((row) => row.currency === "EUR")).toBe(true);
+    expect(parse(["2024\tSueldo", "enero\t$100"].join("\n")).rows[0].currency).toBe(
+      "USD",
+    );
+  });
+
+  it("collects the categories the columns name", () => {
+    const result = parse(GRID);
+
+    expect(result.newCategories.map((category) => category.name)).toEqual([
+      "Sueldo",
+      "Paro",
+      "Renta",
+    ]);
+  });
+
+  it("files a column whose category already exists under it", () => {
+    const result = parse(["2024\tSalary", "enero\t2500"].join("\n"));
+
+    expect(result.rows[0]).toMatchObject({ categoryId: "c-salary", newCategory: null });
+    expect(result.newCategories).toEqual([]);
+  });
+
+  it("reads English month names and three-letter abbreviations", () => {
+    const result = parse(
+      ["2024\tSalary", "January\t2500", "feb\t2500", "dic\t2500"].join("\n"),
+    );
+
+    expect(result.rows.map((row) => row.date)).toEqual([
+      "2024-01-31",
+      "2024-02-29",
+      "2024-12-31",
+    ]);
+  });
+
+  it("rejects one unreadable cell and keeps the rest of the row", () => {
+    const result = parse(["2024\tSueldo\tExtras", "enero\tnonsense\t100"].join("\n"));
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].reason).toMatch(/Sueldo/);
+  });
+
+  it("rejects a month with no year above it", () => {
+    const result = parse(
+      ["2024\tSueldo", "enero\t100", "SUMA\t100"].join("\n").replace("2024\t", "x\t"),
+    );
+
+    expect(result.layout).toBe("rows");
+  });
+
+  it("does not mistake a paste of ordinary rows for a grid", () => {
+    const result = parse("2024-01-31\t2500.00\tSalary\tJanuary");
+
+    expect(result.layout).toBe("rows");
+    expect(result.rows).toHaveLength(1);
   });
 });
 

@@ -286,6 +286,8 @@ describe("the history", () => {
       yearly: [],
       composition: [],
       groups: [],
+      compositionByCategory: [],
+      categories: [],
     });
   });
 

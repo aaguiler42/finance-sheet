@@ -18,6 +18,10 @@ import { currency } from "./wallets";
  *
  * Both are archivable and neither is casually deletable, so retiring a label
  * never orphans the Income filed under it.
+ *
+ * Both also remember whether an import created them, which is what lets undoing
+ * a paste take back the vocabulary it invented as well as the rows it wrote.
+ * See docs/adr/0005.
  */
 
 export const categoryGroup = pgTable(
@@ -31,6 +35,11 @@ export const categoryGroup = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     name: text().notNull(),
     archived: boolean().notNull().default(false),
+    /**
+     * Set only for a group an import invented. `set null` rather than `cascade`:
+     * forgetting where a group came from must never delete the group.
+     */
+    importBatchId: text().references(() => importBatch.id, { onDelete: "set null" }),
     createdAt: timestamp().notNull().defaultNow(),
     updatedAt: timestamp()
       .notNull()
@@ -58,6 +67,8 @@ export const incomeCategory = pgTable(
       .references(() => categoryGroup.id, { onDelete: "cascade" }),
     name: text().notNull(),
     archived: boolean().notNull().default(false),
+    /** Set only for a category an import invented. `set null`, for the same reason. */
+    importBatchId: text().references(() => importBatch.id, { onDelete: "set null" }),
     createdAt: timestamp().notNull().defaultNow(),
     updatedAt: timestamp()
       .notNull()
@@ -72,7 +83,8 @@ export const incomeCategory = pgTable(
 
 /**
  * One paste, remembered as a unit so that a mis-mapped import is undone in a
- * single action rather than row by row.
+ * single action rather than row by row - including any Groups and Categories
+ * the paste had to invent to file its rows under.
  */
 export const importBatch = pgTable(
   "import_batch",

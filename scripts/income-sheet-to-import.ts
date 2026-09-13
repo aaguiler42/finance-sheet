@@ -51,6 +51,24 @@ const MONTHS: Record<string, number> = {
   december: 12,
 };
 
+/**
+ * Where each column belongs in the app's two-level vocabulary. The importer
+ * creates whatever it does not have, so naming the group here is the difference
+ * between a tidy tree and eight categories in a bucket called "Imported".
+ *
+ * A column that is not listed is written bare and lands in that bucket.
+ */
+const GROUPS: Record<string, string> = {
+  Sueldo: "Trabajo",
+  Especie: "Trabajo",
+  Extras: "Trabajo",
+  Paro: "Trabajo",
+  Ventas: "Otros",
+  Marta: "Otros",
+  Shapr: "Otros",
+  Renta: "Impuestos",
+};
+
 /** Rows the sheet computes for itself. They are checksums here, never income. */
 const DERIVED = new Set(["suma", "total", "media", "promedio", "average"]);
 
@@ -218,10 +236,16 @@ function show(minorUnits: number): string {
   return (minorUnits / 100).toFixed(2);
 }
 
+/** `Group / Category` where the group is known, and the bare name where it is not. */
+export function qualify(category: string): string {
+  const group = GROUPS[category];
+  return group ? `${group} / ${category}` : category;
+}
+
 export function toPaste(rows: readonly LongRow[]): string {
   const lines = ["date\tamount\tcurrency\tcategory"];
   for (const row of rows) {
-    lines.push(`${row.date}\t${show(row.amount)}\tEUR\t${row.category}`);
+    lines.push(`${row.date}\t${show(row.amount)}\tEUR\t${qualify(row.category)}`);
   }
   return `${lines.join("\n")}\n`;
 }

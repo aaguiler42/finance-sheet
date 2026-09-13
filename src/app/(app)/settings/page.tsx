@@ -1,21 +1,23 @@
 import { Breadcrumbs } from "@/app/(app)/_components/breadcrumbs";
 import { Panel } from "@/app/(app)/_components/ui";
 import { api } from "@/trpc/server";
-import { CategoryManager } from "./category-manager";
 import { DisplayCurrencyForm } from "./display-currency-form";
 import { ResetData } from "./reset-data";
 
 /**
- * How it reads, what it is called - and, at the bottom, how to throw it away.
+ * How it reads - and, at the bottom, how to throw it away.
+ *
+ * What things are called is not here: income categories are edited from the
+ * Income page itself, behind its Categories button, where the records they
+ * name are.
  *
  * Reset lives here rather than beside the data it removes: a destructive
  * control does not belong in the same viewport as the wallet cards it would
  * delete, and one home means one place to get its confirmation right.
  */
 export default async function SettingsPage() {
-  const [preferences, tree, counts] = await Promise.all([
+  const [preferences, counts] = await Promise.all([
     api.preferences.get(),
-    api.categories.tree(),
     api.data.counts(),
   ]);
 
@@ -30,13 +32,6 @@ export default async function SettingsPage() {
           description="Changes how totals are shown. Nothing stored is converted or rewritten."
         >
           <DisplayCurrencyForm current={preferences.displayCurrency} />
-        </Panel>
-
-        <Panel
-          title="Income categories"
-          description="Groups hold categories. Income is always filed under a category, never a group."
-        >
-          <CategoryManager groups={tree} />
         </Panel>
 
         <Panel

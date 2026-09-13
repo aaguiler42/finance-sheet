@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildIncomeHistory,
   type CategoryRef,
+  compositionFloor,
   type FrozenIncome,
   type GroupRef,
 } from "./income-periods";
@@ -184,8 +185,8 @@ describe("composition by group", () => {
 
     expect(first.year).toBe(2023);
     expect(first.segments).toEqual([
-      { groupId: "employment", amount: 900_000, share: 90 },
-      { groupId: "investments", amount: 100_000, share: 10 },
+      { seriesId: "employment", amount: 900_000, share: 90 },
+      { seriesId: "investments", amount: 100_000, share: 10 },
     ]);
   });
 
@@ -203,8 +204,8 @@ describe("composition by group", () => {
     ]);
 
     expect(composition[0].segments).toEqual([
-      { groupId: "employment", amount: 100_000, share: 100 },
-      { groupId: "investments", amount: 0, share: 0 },
+      { seriesId: "employment", amount: 100_000, share: 100 },
+      { seriesId: "investments", amount: 0, share: 0 },
     ]);
   });
 
@@ -230,7 +231,7 @@ describe("composition by group", () => {
     expect(composition[1]).toEqual({
       year: 2023,
       total: 0,
-      segments: [{ groupId: "employment", amount: 0, share: 0 }],
+      segments: [{ seriesId: "employment", amount: 0, share: 0 }],
     });
   });
 
@@ -239,6 +240,152 @@ describe("composition by group", () => {
 
     expect(groups.map((group) => group.id)).toEqual(["employment"]);
     expect(composition[0].segments).toHaveLength(1);
+  });
+});
+
+describe("composition one level down, by category", () => {
+  const rows = [
+    earned("2024-06-30", 6000, "salary"),
+    earned("2024-06-30", 3000, "bonus"),
+    earned("2024-06-30", 1000, "dividends"),
+  ];
+
+  it("splits the year into the categories it was earned under", () => {
+    const [year] = history(rows).compositionByCategory;
+
+    expect(year.segments).toEqual([
+      { seriesId: "salary", amount: 600_000, share: 60 },
+      { seriesId: "bonus", amount: 300_000, share: 30 },
+      { seriesId: "dividends", amount: 100_000, share: 10 },
+    ]);
+  });
+
+  it("adds up to what the group breakdown says, one level up", () => {
+    const { composition, compositionByCategory } = history(rows);
+
+    const employmentShare = composition[0].segments.find(
+      (segment) => segment.seriesId === "employment",
+    )?.share;
+    const itsCategories = compositionByCategory[0].segments
+      .filter((segment) => segment.seriesId === "salary" || segment.seriesId === "bonus")
+      .reduce((running, segment) => running + segment.share, 0);
+
+    expect(itsCategories).toBe(employmentShare);
+  });
+
+  it("leaves out a category nothing was ever filed under", () => {
+    const { categories } = history(rows);
+
+    expect(categories.map((category) => category.id)).toEqual([
+      "salary",
+      "bonus",
+      "dividends",
+    ]);
+  });
+
+  it("hands out hues by creation order, as the groups do", () => {
+    const { categories } = history(rows);
+
+    expect(categories.map((category) => category.hue)).toEqual([0, 1, 2]);
+  });
+
+  it("keeps a category that costs negative here too", () => {
+    const { compositionByCategory } = history([
+      earned("2024-06-30", 1000, "salary"),
+      earned("2024-07-31", -100, "ads"),
+    ]);
+
+    expect(compositionByCategory[0].segments).toEqual([
+      { seriesId: "salary", amount: 100_000, share: 100 },
+      { seriesId: "ads", amount: -10_000, share: -10 },
+    ]);
+  });
+});
+
+describe("a group that costs rather than earns", () => {
+  // A withholding, a refunded invoice: the group's year nets out negative.
+  const rows = [
+    earned("2024-06-30", 9000, "salary"),
+    earned("2024-06-30", 1000, "dividends"),
+    earned("2024-07-31", -1000, "ads"),
+  ];
+
+  it("measures shares against what came in, so the earners still make 100%", () => {
+    const [year] = history(rows).composition;
+    const earners = year.segments
+      .filter((segment) => segment.amount > 0)
+      .reduce((running, segment) => running + segment.share, 0);
+
+    expect(earners).toBe(100);
+  });
+
+  it("gives the costing group a negative share", () => {
+    const [year] = history(rows).composition;
+
+    expect(year.segments).toEqual([
+      { seriesId: "employment", amount: 900_000, share: 90 },
+      { seriesId: "investments", amount: 100_000, share: 10 },
+      { seriesId: "side", amount: -100_000, share: -10 },
+    ]);
+  });
+
+  it("still reports the year's net total beside the shares", () => {
+    const [year] = history(rows).composition;
+
+    // 9000 earned and 1000 withheld is a 9000 year, whatever the shares say.
+    expect(year.total).toBe(900_000);
+  });
+
+  it("has nothing to state for a year that only cost", () => {
+    const { composition } = history([earned("2024-06-30", -500, "ads")]);
+
+    // No gross to take a share of. A share of nothing is not -100%, it is
+    // nothing - and the figure is still there in the tooltip.
+    expect(composition[0].segments).toEqual([
+      { seriesId: "side", amount: -50_000, share: 0 },
+    ]);
+  });
+});
+
+describe("the floor the composition chart needs", () => {
+  it("is zero when nothing was ever withheld", () => {
+    expect(compositionFloor(history([earned("2024-06-30", 2500)]).composition)).toBe(0);
+  });
+
+  it("reaches past the deepest year, rounded out to a round number", () => {
+    const floor = compositionFloor(
+      history([earned("2024-06-30", 9000, "salary"), earned("2024-07-31", -362, "ads")])
+        .composition,
+    );
+
+    // -4.02% of gross, so the axis goes to -5 rather than stopping on the band.
+    expect(floor).toBe(-5);
+  });
+
+  it("adds up every costing group in a year rather than taking the worst", () => {
+    const floor = compositionFloor([
+      {
+        year: 2024,
+        total: 0,
+        segments: [
+          { seriesId: "a", amount: 100, share: 100 },
+          { seriesId: "b", amount: -1, share: -6 },
+          { seriesId: "c", amount: -1, share: -6 },
+        ],
+      },
+    ]);
+
+    // The two stack on each other below the line, so -12 has to fit.
+    expect(floor).toBe(-15);
+  });
+
+  it("takes the deepest year, not the last one", () => {
+    const floor = compositionFloor([
+      { year: 2023, total: 0, segments: [{ seriesId: "a", amount: -1, share: -30 }] },
+      { year: 2024, total: 0, segments: [{ seriesId: "a", amount: -1, share: -2 }] },
+    ]);
+
+    expect(floor).toBe(-30);
   });
 });
 
@@ -289,6 +436,8 @@ describe("the edges", () => {
       yearly: [],
       composition: [],
       groups: [],
+      compositionByCategory: [],
+      categories: [],
     });
   });
 

@@ -95,23 +95,55 @@ export interface YearlyPoint {
   readonly total: number;
 }
 
-/** One Group's slice of one year. */
+/** One series' slice of one year - a Group or a Category, depending. */
 export interface CompositionSegment {
-  readonly groupId: string;
+  readonly seriesId: string;
   readonly amount: number;
-  /** Percentage of the year, 0-100. Zero for a group that earned nothing. */
+  /**
+   * Percentage of the year's *gross* earnings - the sum of the groups that
+   * earned, before any that cost. The groups that earned therefore always sum
+   * to 100, and a group that nets negative (a tax withholding, a year of
+   * refunds) is negative rather than eating into its neighbours' slices.
+   *
+   * Measuring against the net total instead would make a year with a negative
+   * group add up to more than 100%, which no axis can honestly draw.
+   */
   readonly share: number;
 }
 
 export interface CompositionYear {
   readonly year: number;
+  /** What the year actually came to: gross less anything negative. */
   readonly total: number;
-  /** Every earning group, in creation order, whether or not it earned here. */
+  /** Every earning series, in creation order, whether or not it earned here. */
   readonly segments: CompositionSegment[];
 }
 
-/** A group as a chart legend needs it: a name and the hue it owns. */
-export interface HistoryGroup {
+/**
+ * How far below zero the composition chart has to reach, rounded out to a round
+ * number, or 0 when nothing was ever withheld.
+ *
+ * The groups that earned always stack to 100, so only the floor is in question.
+ * It lives here rather than in the chart because it is arithmetic over the same
+ * shares, and because a chart is an awkward place to test one.
+ */
+export function compositionFloor(composition: readonly CompositionYear[]): number {
+  const deepest = composition.reduce((lowest, year) => {
+    const withheld = year.segments.reduce(
+      (running, segment) => (segment.share < 0 ? running + segment.share : running),
+      0,
+    );
+    return Math.min(lowest, withheld);
+  }, 0);
+
+  return deepest === 0 ? 0 : Math.floor(deepest / 5) * 5;
+}
+
+/**
+ * One band of the composition chart as its legend needs it: a name and the hue
+ * it owns. A Group at one level of the toggle, a Category at the other.
+ */
+export interface HistorySeries {
   readonly id: string;
   readonly name: string;
   readonly hue: number;
@@ -123,9 +155,18 @@ export interface IncomeHistory {
   /** Every month from the first record to this one, ascending, gaps as zero. */
   readonly monthly: MonthlyPoint[];
   readonly yearly: YearlyPoint[];
+  /** Shares by Group: the rollup. */
   readonly composition: CompositionYear[];
   /** Only groups with income under them, in creation order. */
-  readonly groups: HistoryGroup[];
+  readonly groups: HistorySeries[];
+  /**
+   * The same years broken down one level further. A two-level vocabulary means
+   * "by category" is a real question with a different answer, and a sheet whose
+   * columns are Sueldo and Extras is asking it.
+   */
+  readonly compositionByCategory: CompositionYear[];
+  /** Only categories with income under them, in creation order. */
+  readonly categories: HistorySeries[];
 }
 
 const EMPTY: IncomeHistory = {
@@ -134,6 +175,8 @@ const EMPTY: IncomeHistory = {
   yearly: [],
   composition: [],
   groups: [],
+  compositionByCategory: [],
+  categories: [],
 };
 
 function byDateDescending(a: FrozenIncome, b: FrozenIncome): number {
@@ -148,6 +191,43 @@ function byDateDescending(a: FrozenIncome, b: FrozenIncome): number {
  * record dated in the future extends them further rather than falling off the
  * end of its own chart.
  */
+/**
+ * One year's segments for one level of the vocabulary.
+ *
+ * Shared by the Group breakdown and the Category one so the two cannot come to
+ * different answers about the same year.
+ */
+function composeYear(
+  year: number,
+  total: number,
+  series: readonly HistorySeries[],
+  totals: Map<string, number> | undefined,
+): CompositionYear {
+  const amounts = series.map((entry) => totals?.get(entry.id) ?? 0);
+  // Shares are measured against what came in, not against the net: a year of
+  // 40k earned and 1.5k withheld is 100% earnings and a 4% deduction, not
+  // 104% earnings. See `CompositionSegment.share`.
+  const gross = amounts.reduce(
+    (running, amount) => (amount > 0 ? running + amount : running),
+    0,
+  );
+
+  return {
+    year,
+    total,
+    segments: series.map((entry, index) => {
+      const amount = amounts[index];
+      // A year that earned nothing has no composition to state. Zero shares
+      // draw an empty slot, which is the honest picture of an empty year.
+      return {
+        seriesId: entry.id,
+        amount,
+        share: gross === 0 ? 0 : (amount / gross) * 100,
+      };
+    }),
+  };
+}
+
 export function buildIncomeHistory(
   rows: readonly FrozenIncome[],
   categories: readonly CategoryRef[],
@@ -158,6 +238,9 @@ export function buildIncomeHistory(
 
   const today = options.today ?? todayIso();
   const hues = assignHues(groupsInCreationOrder);
+  // Categories get their own run of hues, on the same creation-order rule, so
+  // the two levels of the toggle are each internally consistent. See ADR 0004.
+  const categoryHues = assignHues(categories);
   const categoriesById = new Map(categories.map((category) => [category.id, category]));
   const groupsById = new Map(groupsInCreationOrder.map((group) => [group.id, group]));
 
@@ -180,6 +263,8 @@ export function buildIncomeHistory(
   /** Year -> group id -> base-currency total. */
   const byYearAndGroup = new Map<number, Map<string, number>>();
   const earningGroups = new Set<string>();
+  const byYearAndCategory = new Map<number, Map<string, number>>();
+  const earningCategories = new Set<string>();
 
   let earliest = ordered[ordered.length - 1].date;
   let latest = ordered[0].date;
@@ -236,11 +321,26 @@ export function buildIncomeHistory(
       groupTotals.set(group.id, (groupTotals.get(group.id) ?? 0) + base);
       byYearAndGroup.set(year, groupTotals);
     }
+
+    if (category) {
+      earningCategories.add(category.id);
+      const totals = byYearAndCategory.get(year) ?? new Map<string, number>();
+      totals.set(category.id, (totals.get(category.id) ?? 0) + base);
+      byYearAndCategory.set(year, totals);
+    }
   }
 
-  const groups: HistoryGroup[] = groupsInCreationOrder
+  const groups: HistorySeries[] = groupsInCreationOrder
     .filter((group) => earningGroups.has(group.id))
     .map((group) => ({ id: group.id, name: group.name, hue: hues.get(group.id) ?? 0 }));
+
+  const earningCategoryList: HistorySeries[] = categories
+    .filter((category) => earningCategories.has(category.id))
+    .map((category) => ({
+      id: category.id,
+      name: category.name,
+      hue: categoryHues.get(category.id) ?? 0,
+    }));
 
   // The charts run to whichever is later: a backdated spreadsheet ends before
   // today, and an invoice dated next month ends after it.
@@ -254,25 +354,15 @@ export function buildIncomeHistory(
 
   const yearly: YearlyPoint[] = [];
   const composition: CompositionYear[] = [];
+  const compositionByCategory: CompositionYear[] = [];
   for (let year = yearOf(earliest); year <= lastYear; year += 1) {
     const total = yearTotals.get(year) ?? 0;
     yearly.push({ year, total });
 
-    const groupTotals = byYearAndGroup.get(year);
-    composition.push({
-      year,
-      total,
-      segments: groups.map((group) => {
-        const amount = groupTotals?.get(group.id) ?? 0;
-        // A year that earned nothing has no composition to state. Zero shares
-        // draw an empty slot, which is the honest picture of an empty year.
-        return {
-          groupId: group.id,
-          amount,
-          share: total === 0 ? 0 : (amount / total) * 100,
-        };
-      }),
-    });
+    composition.push(composeYear(year, total, groups, byYearAndGroup.get(year)));
+    compositionByCategory.push(
+      composeYear(year, total, earningCategoryList, byYearAndCategory.get(year)),
+    );
   }
 
   return {
@@ -283,5 +373,7 @@ export function buildIncomeHistory(
     yearly,
     composition,
     groups,
+    compositionByCategory,
+    categories: earningCategoryList,
   };
 }

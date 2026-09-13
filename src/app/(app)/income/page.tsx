@@ -2,6 +2,7 @@ import { Breadcrumbs } from "@/app/(app)/_components/breadcrumbs";
 import { panel } from "@/app/(app)/_components/ui";
 import { todayIso, yearOf } from "@/lib/dates";
 import { api } from "@/trpc/server";
+import { CategoriesModal } from "./categories-modal";
 import type { CategoryOption } from "./category-options";
 import { ImportModal } from "./import-modal";
 import { IncomeCharts } from "./income-charts";
@@ -12,7 +13,7 @@ import { RecordIncomeModal } from "./record-income-modal";
 /**
  * Everything earned: two charts over a year accordion, with the two ways in -
  * one at a time by hand, or a whole spreadsheet at once - behind header
- * buttons.
+ * buttons, alongside the categories they are filed under.
  *
  * A Server Component that hands finished data to four clients, rather than one
  * client page: someone who came to fix a note should not be shipped a charting
@@ -48,6 +49,7 @@ export default async function IncomePage() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <CategoriesModal groups={tree} />
               <ImportModal batches={batches} />
               <RecordIncomeModal categories={categories} />
             </div>
@@ -67,6 +69,8 @@ export default async function IncomePage() {
                 yearly={history.yearly}
                 composition={history.composition}
                 groups={history.groups}
+                compositionByCategory={history.compositionByCategory}
+                categories={history.categories}
                 displayCurrency={preferences.displayCurrency}
               />
               <IncomeHistory

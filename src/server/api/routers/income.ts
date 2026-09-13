@@ -66,7 +66,13 @@ export const incomeRouter = createTRPCRouter({
         // same instant, which a seeded account has plenty of, so a hue cannot
         // change between two reads of the same data.
         .orderBy(asc(categoryGroup.createdAt), asc(categoryGroup.id)),
-      ctx.db.select().from(incomeCategory).where(eq(incomeCategory.userId, ctx.user.id)),
+      ctx.db
+        .select()
+        .from(incomeCategory)
+        .where(eq(incomeCategory.userId, ctx.user.id))
+        // Creation order here too, for the same reason as the groups above: the
+        // category breakdown hands out its hues by position in this list.
+        .orderBy(asc(incomeCategory.createdAt), asc(incomeCategory.id)),
       ctx.db
         .select()
         .from(income)

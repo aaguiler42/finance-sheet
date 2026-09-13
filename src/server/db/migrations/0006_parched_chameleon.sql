@@ -1,0 +1,4 @@
+ALTER TABLE "category_group" ADD COLUMN "import_batch_id" text;--> statement-breakpoint
+ALTER TABLE "income_category" ADD COLUMN "import_batch_id" text;--> statement-breakpoint
+ALTER TABLE "category_group" ADD CONSTRAINT "category_group_import_batch_id_import_batch_id_fk" FOREIGN KEY ("import_batch_id") REFERENCES "public"."import_batch"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "income_category" ADD CONSTRAINT "income_category_import_batch_id_import_batch_id_fk" FOREIGN KEY ("import_batch_id") REFERENCES "public"."import_batch"("id") ON DELETE set null ON UPDATE no action;

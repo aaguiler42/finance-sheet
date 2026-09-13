@@ -108,6 +108,86 @@ function normalise(value: string): string {
 }
 
 /**
+ * The group a paste puts a category in when it does not say: every import that
+ * writes a bare name has to put it somewhere, and a name the user recognises
+ * beats filing it under the first group that happens to exist.
+ */
+export const DEFAULT_IMPORT_GROUP = "Imported";
+
+export interface NewCategory {
+  readonly group: string;
+  readonly name: string;
+}
+
+/**
+ * The identity of a category for deduplication: its group and its name, case
+ * folded. Shared so that the parser's idea of "the same new category" and the
+ * commit's idea of it cannot drift apart.
+ */
+export function categoryKey(entry: NewCategory): string {
+  return `${normalise(entry.group)}/${normalise(entry.name)}`;
+}
+
+/**
+ * What a written category name means to a vocabulary: one that exists, one that
+ * would have to be created, or a bare name two groups both claim.
+ *
+ * The third case is the reason this is not a boolean. Creating a category for a
+ * name that already exists twice would add a third, and the row the user meant
+ * would be filed under none of them.
+ */
+export type CategoryMatch =
+  | { readonly kind: "existing"; readonly id: string }
+  | { readonly kind: "new"; readonly group: string; readonly name: string }
+  | { readonly kind: "ambiguous" };
+
+/**
+ * Splits `Group / Category`, and only when both halves are really there - so a
+ * category genuinely called "Bed / Breakfast" is not silently reparented into a
+ * group called "Bed", and a trailing slash leaves the name intact.
+ */
+export function splitQualifiedName(text: string): { group: string | null; name: string } {
+  const at = text.indexOf("/");
+  if (at === -1) return { group: null, name: text.trim() };
+
+  const group = text.slice(0, at).trim();
+  const name = text.slice(at + 1).trim();
+  if (group === "" || name === "") return { group: null, name: text.trim() };
+
+  return { group, name };
+}
+
+/**
+ * Like `resolveCategoryName`, but it also says *why* a name did not resolve, so
+ * an import can create what is merely missing and refuse only what is genuinely
+ * unclear. `text` is expected to be non-empty; an empty name matches nothing and
+ * is never created.
+ */
+export function matchCategoryName(
+  groups: readonly CategoryGroupRow[],
+  categories: readonly CategoryRow[],
+  text: string,
+): CategoryMatch {
+  const existing = resolveCategoryName(groups, categories, text);
+  if (existing) return { kind: "existing", id: existing.id };
+
+  const { group, name } = splitQualifiedName(text);
+  if (name === "") return { kind: "ambiguous" };
+
+  // A bare name that two groups both use did not fail to resolve because it is
+  // missing. It failed because it is over-supplied, and the fix is to qualify
+  // it rather than to create a third one.
+  if (group === null) {
+    const bare = categories.filter(
+      (category) => normalise(category.name) === normalise(name),
+    );
+    if (bare.length > 1) return { kind: "ambiguous" };
+  }
+
+  return { kind: "new", group: group ?? DEFAULT_IMPORT_GROUP, name };
+}
+
+/**
  * Matches a category by the name a pasted row calls it: either the bare
  * category name or `Group / Category`.
  *

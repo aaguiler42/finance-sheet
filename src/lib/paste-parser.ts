@@ -9,9 +9,18 @@
  * Nothing here writes anything or knows what a database is. A row that cannot
  * be read is rejected on its own, with a reason, and never stops its neighbours
  * from importing - one malformed date in 2022 must not cost the other 400 rows.
+ *
+ * A category the paste names but the user does not have yet is not a bad row:
+ * it is reported in `newCategories` for the commit to create. See docs/adr/0005.
+ *
+ * Two shapes are read. One record per line is the obvious one. The other is the
+ * shape a yearly income sheet actually has - a grid of months down and
+ * categories across, one block per year - which is pivoted back into records
+ * here rather than by hand before pasting. See docs/adr/0006.
  */
 
-import { type IsoDate, isIsoDate, toIsoDate } from "./dates";
+import { type CategoryMatch, categoryKey, type NewCategory } from "./category-tree";
+import { endOfMonth, type IsoDate, isIsoDate, toIsoDate } from "./dates";
 import { BASE_CURRENCY, type Currency, isCurrency, parseAmount } from "./money";
 
 export interface ParsedIncomeRow {
@@ -21,7 +30,11 @@ export interface ParsedIncomeRow {
   /** Integer minor units. */
   readonly amount: number;
   readonly currency: Currency;
-  readonly categoryId: string;
+  /** Null exactly when `newCategory` is set: the commit creates it and fills it in. */
+  readonly categoryId: string | null;
+  /** Set exactly when `categoryId` is null: the category this row would create. */
+  readonly newCategory: NewCategory | null;
+  /** The name as the paste wrote it, qualified or not. */
   readonly categoryName: string;
   readonly note: string | null;
 }
@@ -35,16 +48,24 @@ export interface RejectedRow {
 export interface PasteResult {
   readonly rows: ParsedIncomeRow[];
   readonly rejected: RejectedRow[];
+  /**
+   * The categories this paste mentions that do not exist yet, deduplicated and
+   * in the order they first appear. The preview shows these so that creating
+   * vocabulary is something the user sees coming rather than discovers later.
+   */
+  readonly newCategories: NewCategory[];
   /** Named for the preview, which says how the paste was read. */
   readonly delimiter: "tab" | "comma" | "semicolon";
   readonly hasHeader: boolean;
+  /** `grid` for a year-block sheet: months down, categories across. */
+  readonly layout: "rows" | "grid";
   /** Set when the paste as a whole could not be read, e.g. no amount column. */
   readonly problem: string | null;
 }
 
 export interface ParseOptions {
-  /** Category name to id. Returns `null` for unknown or ambiguous names. */
-  readonly resolveCategory: (name: string) => string | null;
+  /** What a written category name means to the user's vocabulary. */
+  readonly matchCategory: (name: string) => CategoryMatch;
   /** Used when a row says nothing about currency. */
   readonly defaultCurrency?: Currency;
 }
@@ -273,6 +294,217 @@ function columnsFromFirstRow(cells: readonly string[]): Columns {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Categories                                                                 */
+/* -------------------------------------------------------------------------- */
+
+interface Filed {
+  readonly categoryId: string | null;
+  readonly newCategory: NewCategory | null;
+}
+
+/**
+ * Files names against the vocabulary and remembers the ones that will have to
+ * be created. Shared by both layouts so that "the same new category" means the
+ * same thing however the paste was shaped.
+ */
+function categoryCollector(options: ParseOptions) {
+  const pending = new Map<string, NewCategory>();
+
+  return {
+    /** Where a row goes, or the reason it cannot go anywhere. */
+    file(name: string): Filed | { reason: string } {
+      const match = options.matchCategory(name);
+
+      if (match.kind === "ambiguous") {
+        return {
+          reason:
+            `More than one group has a category called "${name}" - ` +
+            'write it as "Group / Category" to say which',
+        };
+      }
+      if (match.kind === "existing") return { categoryId: match.id, newCategory: null };
+
+      const key = categoryKey(match);
+      const newCategory = pending.get(key) ?? { group: match.group, name: match.name };
+      pending.set(key, newCategory);
+      return { categoryId: null, newCategory };
+    },
+
+    list: (): NewCategory[] => [...pending.values()],
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The year grid                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** Month names as a sheet writes them down its first column. */
+const GRID_MONTHS: Record<string, number> = {
+  enero: 1,
+  febrero: 2,
+  marzo: 3,
+  abril: 4,
+  mayo: 5,
+  junio: 6,
+  julio: 7,
+  agosto: 8,
+  septiembre: 9,
+  setiembre: 9,
+  octubre: 10,
+  noviembre: 11,
+  diciembre: 12,
+};
+
+/** Cells a sheet computes for itself. Importing them would double the year. */
+const DERIVED = new Set([
+  "suma",
+  "total",
+  "totales",
+  "media",
+  "promedio",
+  "average",
+  "avg",
+]);
+
+function monthFromLabel(text: string): number | null {
+  const wanted = text.trim().toLowerCase().replace(/\.$/, "");
+  if (wanted === "") return null;
+
+  const spanish = GRID_MONTHS[wanted];
+  if (spanish !== undefined) return spanish;
+
+  // English, and three-letter abbreviations of either language.
+  const english = MONTH_NAMES.findIndex(
+    (month) => month === wanted || month.slice(0, 3) === wanted,
+  );
+  if (english !== -1) return english + 1;
+
+  for (const [name, month] of Object.entries(GRID_MONTHS)) {
+    if (name.slice(0, 3) === wanted) return month;
+  }
+  return null;
+}
+
+function isYearLabel(cell: string): boolean {
+  return /^\d{4}$/.test(cell.trim());
+}
+
+/**
+ * A year on its own in the first column, with month names underneath it. Both
+ * halves are required: a lone `2024` could be anything, and a column of months
+ * with no year over it says nothing about which year it is.
+ */
+function looksLikeYearGrid(lines: readonly { cells: string[] }[]): boolean {
+  let sawYear = false;
+
+  for (const line of lines) {
+    const label = line.cells[0] ?? "";
+    if (isYearLabel(label) && line.cells.slice(1).some((cell) => cell.trim() !== "")) {
+      sawYear = true;
+      continue;
+    }
+    if (sawYear && monthFromLabel(label) !== null) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Reads months down and categories across, one block per year.
+ *
+ * Every figure the sheet worked out for itself is ignored - the TOTAL column,
+ * the SUMA and Media rows - because they are restatements of the cells beside
+ * them and importing both would count the year twice. A blank cell is a month
+ * with no such earning, and a zero says the same thing out loud; neither
+ * becomes a row.
+ */
+function parseYearGrid(
+  lines: readonly { lineNumber: number; raw: string; cells: string[] }[],
+  options: ParseOptions,
+  delimiter: DelimiterName,
+  defaultCurrency: Currency,
+): PasteResult {
+  const categories = categoryCollector(options);
+  const rows: ParsedIncomeRow[] = [];
+  const rejected: RejectedRow[] = [];
+
+  /** The block whose columns the rows underneath are read against. */
+  let columns: Map<number, string> | null = null;
+  let year = 0;
+
+  for (const line of lines) {
+    const label = (line.cells[0] ?? "").trim();
+    const reject = (reason: string) =>
+      rejected.push({ lineNumber: line.lineNumber, raw: line.raw, reason });
+
+    if (isYearLabel(label)) {
+      columns = new Map();
+      year = Number(label);
+
+      line.cells.forEach((cell, index) => {
+        const name = cell.trim();
+        if (index === 0 || name === "" || DERIVED.has(name.toLowerCase())) return;
+        columns?.set(index, name);
+      });
+      continue;
+    }
+
+    const month = monthFromLabel(label);
+    if (month === null) continue;
+
+    if (!columns) {
+      reject("There is no year above this row");
+      continue;
+    }
+
+    // The last day of the month, because a month's figure is what it added up
+    // to by the end of it - and because a year of rows on the 1st would file
+    // January's earnings before January happened.
+    const date = endOfMonth(toIsoDate(year, month, 1));
+
+    for (const [index, name] of columns) {
+      const cell = (line.cells[index] ?? "").trim();
+      if (cell === "") continue;
+
+      const amount = parseAmount(cell);
+      if (amount === null) {
+        reject(`Could not read the amount "${cell}" under ${name}`);
+        continue;
+      }
+      if (amount === 0) continue;
+
+      const filed = categories.file(name);
+      if ("reason" in filed) {
+        reject(filed.reason);
+        continue;
+      }
+
+      rows.push({
+        lineNumber: line.lineNumber,
+        raw: line.raw,
+        date,
+        amount,
+        currency: detectCurrency(cell) ?? defaultCurrency,
+        categoryId: filed.categoryId,
+        newCategory: filed.newCategory,
+        categoryName: name,
+        note: null,
+      });
+    }
+  }
+
+  return {
+    rows,
+    rejected,
+    newCategories: categories.list(),
+    delimiter,
+    hasHeader: true,
+    layout: "grid",
+    problem: null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* The parse                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -293,8 +525,10 @@ export function parseIncomePaste(text: string, options: ParseOptions): PasteResu
   const empty: PasteResult = {
     rows: [],
     rejected: [],
+    newCategories: [],
     delimiter: "tab",
     hasHeader: false,
+    layout: "rows",
     problem: null,
   };
 
@@ -303,6 +537,10 @@ export function parseIncomePaste(text: string, options: ParseOptions): PasteResu
   const delimiter = sniffDelimiter(numbered.map((line) => line.raw));
   const char = DELIMITERS.find((entry) => entry.name === delimiter)?.char ?? "\t";
   const split = numbered.map((line) => ({ ...line, cells: splitLine(line.raw, char) }));
+
+  if (looksLikeYearGrid(split)) {
+    return parseYearGrid(split, options, delimiter, defaultCurrency);
+  }
 
   const first = split[0];
   const hasHeader =
@@ -334,6 +572,7 @@ export function parseIncomePaste(text: string, options: ParseOptions): PasteResu
 
   const rows: ParsedIncomeRow[] = [];
   const rejected: RejectedRow[] = [];
+  const categories = categoryCollector(options);
   const body = hasHeader ? split.slice(1) : split;
 
   for (const line of body) {
@@ -367,9 +606,9 @@ export function parseIncomePaste(text: string, options: ParseOptions): PasteResu
       continue;
     }
 
-    const categoryId = options.resolveCategory(categoryName);
-    if (!categoryId) {
-      reject(`No category called "${categoryName}" - create it first`);
+    const filed = categories.file(categoryName);
+    if ("reason" in filed) {
+      reject(filed.reason);
       continue;
     }
 
@@ -386,11 +625,20 @@ export function parseIncomePaste(text: string, options: ParseOptions): PasteResu
       date,
       amount,
       currency,
-      categoryId,
+      categoryId: filed.categoryId,
+      newCategory: filed.newCategory,
       categoryName,
       note: note === "" ? null : note,
     });
   }
 
-  return { rows, rejected, delimiter, hasHeader, problem: null };
+  return {
+    rows,
+    rejected,
+    newCategories: categories.list(),
+    delimiter,
+    hasHeader,
+    layout: "rows",
+    problem: null,
+  };
 }

@@ -11,17 +11,28 @@ import { signUpFreshUser } from "./helpers";
  * and the arithmetic behind every figure is pure, and both are covered by unit
  * tests that run in milliseconds - `expansion.test.ts` and
  * `income-periods.test.ts`.
+ *
+ * The composition chart is here for the one thing unit tests cannot see: where
+ * the bars are actually drawn.
  */
 
 async function createVocabulary(page: Page) {
-  await page.goto("/settings");
-  await page.getByLabel("New group").fill("Employment");
-  await page.getByRole("button", { name: "Add group" }).click();
-  await expect(page.getByText("Employment")).toBeVisible();
+  await page.goto("/income");
+  await page.getByRole("button", { name: "Categories" }).click();
 
-  await page.getByLabel("New category in Employment").fill("Salary");
-  await page.getByRole("button", { name: "Add category" }).click();
-  await expect(page.getByText("Salary")).toBeVisible();
+  const modal = page.getByRole("dialog", { name: "Income categories" });
+  await expect(modal).toBeVisible();
+
+  await modal.getByLabel("New group").fill("Employment");
+  await modal.getByRole("button", { name: "Add group" }).click();
+  await expect(modal.getByText("Employment")).toBeVisible();
+
+  await modal.getByLabel("New category in Employment").fill("Salary");
+  await modal.getByRole("button", { name: "Add category" }).click();
+  await expect(modal.getByText("Salary")).toBeVisible();
+
+  await modal.getByRole("button", { name: "Done" }).click();
+  await expect(modal).toBeHidden();
 }
 
 /** The year's row in the accordion, which carries its total and count. */
@@ -159,4 +170,118 @@ test("pastes, previews, confirms and undoes, all in the import modal", async ({
   await page.keyboard.press("Escape");
 
   await expect(page.getByText("Nothing recorded yet.")).toBeVisible();
+});
+
+/**
+ * A year sheet with a column that costs rather than earns, pasted whole. The
+ * qualified names put the two columns in two groups, which is what gives the
+ * chart something to stack.
+ */
+const WITHHOLDING_SHEET = [
+  "2024\tTrabajo / Sueldo\tImpuestos / Renta\tTOTAL",
+  "enero\t1.000,00 €\t-100,00 €\t900,00 €",
+  "febrero\t1.000,00 €\t-100,00 €\t900,00 €",
+].join("\n");
+
+test("a group that costs is drawn below the zero line, not off the top", async ({
+  page,
+}) => {
+  await signUpFreshUser(page);
+
+  await page.goto("/income");
+  await page.getByRole("button", { name: "Import" }).click();
+
+  const modal = page.getByRole("dialog", { name: "Import income" });
+  await modal.getByLabel("Rows to import").fill(WITHHOLDING_SHEET);
+  await modal.getByRole("button", { name: "Preview" }).click();
+
+  // The sheet's own TOTAL column is not a category, and the two that are do not
+  // exist yet, so the import says it will create exactly those two.
+  await expect(modal.getByText("2 categories will be created")).toBeVisible();
+  await modal.getByRole("button", { name: /^Import 4 rows/ }).click();
+  await expect(modal.getByText(/^Imported 4 rows/)).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  const chart = page.locator(".recharts-wrapper").last();
+  await expect(
+    page.getByText("with anything withheld below the line", { exact: false }),
+  ).toBeVisible();
+
+  /**
+   * Every band in one reading, and polled: the chart is sized by a
+   * ResponsiveContainer and the page refreshes itself after the import, so a
+   * single measurement can land mid-layout.
+   *
+   * Which band is the withholding is deliberately not assumed. Two categories
+   * created in the same millisecond tie on their timestamp and are ordered by
+   * id, so the series they are drawn in is stable for one account and arbitrary
+   * between two runs. What must hold is a statement about the picture, not
+   * about an index.
+   */
+  const geometry = async () => {
+    const plot = await chart.locator(".recharts-cartesian-grid").first().boundingBox();
+    const zeroLine = await chart.locator(".recharts-reference-line line").boundingBox();
+    if (!plot || !zeroLine || plot.height < 100) return null;
+
+    const bands = await chart.locator(".recharts-bar-rectangle").all();
+    type Box = { x: number; y: number; width: number; height: number };
+    const boxes = (await Promise.all(bands.map((band) => band.boundingBox()))).filter(
+      (box): box is Box => box !== null && box.height > 2,
+    );
+    if (boxes.length === 0) return null;
+
+    return {
+      // The zero line sits near the bottom: the withholding is a tenth of what
+      // came in, and the earners fill the height above it.
+      zeroLineNearBottom: zeroLine.y > plot.y + plot.height * 0.8,
+      // The whole point: the withholding hangs off the zero line rather than
+      // off the top, which is where a cumulative stack would put it.
+      oneBandBelowTheZeroLine:
+        boxes.filter((box) => box.y >= zeroLine.y - 1).length === 1,
+      everyBandInsideThePlot: boxes.every(
+        (box) => box.y >= plot.y - 1 && box.y + box.height <= plot.y + plot.height + 1,
+      ),
+    };
+  };
+
+  await expect.poll(geometry).toEqual({
+    zeroLineNearBottom: true,
+    oneBandBelowTheZeroLine: true,
+    everyBandInsideThePlot: true,
+  });
+
+  // And the tooltip keeps the sign, rather than rounding a deduction into "<1%".
+  // One tooltip covers the whole column, so any band in it will do.
+  await chart.locator(".recharts-bar-rectangle").first().hover();
+  await expect(page.getByText("-10%")).toBeVisible();
+});
+
+test("the composition chart breaks down by category, or by group on request", async ({
+  page,
+}) => {
+  await signUpFreshUser(page);
+
+  await page.goto("/income");
+  await page.getByRole("button", { name: "Import" }).click();
+
+  const modal = page.getByRole("dialog", { name: "Import income" });
+  await modal.getByLabel("Rows to import").fill(WITHHOLDING_SHEET);
+  await modal.getByRole("button", { name: "Preview" }).click();
+  await modal.getByRole("button", { name: /^Import 4 rows/ }).click();
+  await expect(modal.getByText(/^Imported 4 rows/)).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // The columns of the sheet are what the chart names, without being asked.
+  const chart = page.locator("section").filter({ hasText: "By category" });
+  await expect(chart.getByText("Sueldo")).toBeVisible();
+  await expect(chart.getByText("Renta")).toBeVisible();
+  await expect(chart.getByText("Trabajo")).toBeHidden();
+
+  await chart.getByRole("button", { name: "group" }).click();
+
+  await expect(chart.getByText("Trabajo")).toBeVisible();
+  await expect(chart.getByText("Impuestos")).toBeVisible();
+  await expect(chart.getByText("Sueldo")).toBeHidden();
 });

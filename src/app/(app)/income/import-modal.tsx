@@ -45,14 +45,20 @@ export function ImportModal({ batches }: { batches: ImportBatchSummary[] }) {
   const [preview, setPreview] = useState<PasteResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [imported, setImported] = useState<{ batchId: string; count: number } | null>(
-    null,
-  );
+  const [imported, setImported] = useState<{
+    batchId: string;
+    count: number;
+    createdCategories: number;
+  } | null>(null);
 
   const commit = useMutation(
     trpc.import.commit.mutationOptions({
       onSuccess: (result) => {
-        setImported({ batchId: result.batchId, count: result.imported });
+        setImported({
+          batchId: result.batchId,
+          count: result.imported,
+          createdCategories: result.createdCategories,
+        });
         setPreview(null);
         setText("");
         setError(null);
@@ -108,7 +114,7 @@ export function ImportModal({ batches }: { batches: ImportBatchSummary[] }) {
         onClose={close}
         size="wide"
         title="Import income"
-        description="Paste rows straight from a spreadsheet: date, amount, category, note. Tabs, commas and semicolons all work, and nothing is saved until you confirm."
+        description="Paste straight from a spreadsheet: either one row per record (date, amount, category, note) or a whole year sheet with months down and categories across. Categories you do not have yet are created, and nothing is saved until you confirm."
       >
         {open && (
           <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto">
@@ -140,7 +146,12 @@ export function ImportModal({ batches }: { batches: ImportBatchSummary[] }) {
                 >
                   {commit.isPending
                     ? "Importing..."
-                    : `Import ${preview.rows.length} ${preview.rows.length === 1 ? "row" : "rows"}`}
+                    : `Import ${preview.rows.length} ${preview.rows.length === 1 ? "row" : "rows"}` +
+                      (preview.newCategories.length > 0
+                        ? ` and ${preview.newCategories.length} new ${
+                            preview.newCategories.length === 1 ? "category" : "categories"
+                          }`
+                        : "")}
                 </button>
               )}
 
@@ -151,7 +162,12 @@ export function ImportModal({ batches }: { batches: ImportBatchSummary[] }) {
 
             {imported && (
               <p className="text-sm">
-                Imported {imported.count} {imported.count === 1 ? "row" : "rows"}.{" "}
+                Imported {imported.count} {imported.count === 1 ? "row" : "rows"}
+                {imported.createdCategories > 0 &&
+                  ` and created ${imported.createdCategories} ${
+                    imported.createdCategories === 1 ? "category" : "categories"
+                  }`}
+                .{" "}
                 <button
                   type="button"
                   className={linkButton}
@@ -205,10 +221,34 @@ function PreviewTable({ preview }: { preview: PasteResult }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm opacity-60">
-        Read as {preview.delimiter}-separated
-        {preview.hasHeader ? ", with a header row" : ", with no header row"}.{" "}
+        {preview.layout === "grid"
+          ? "Read as a year sheet: months down, categories across. Totals and averages ignored."
+          : `Read as ${preview.delimiter}-separated${
+              preview.hasHeader ? ", with a header row" : ", with no header row"
+            }.`}{" "}
         {preview.rows.length} to import, {preview.rejected.length} skipped.
       </p>
+
+      {preview.newCategories.length > 0 && (
+        <div className="rounded border border-black/10 p-3 text-sm dark:border-white/15">
+          <h3 className="font-medium">
+            {preview.newCategories.length === 1
+              ? "One category will be created"
+              : `${preview.newCategories.length} categories will be created`}
+          </h3>
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 opacity-70">
+            {preview.newCategories.map((category) => (
+              <li key={`${category.group}/${category.name}`}>
+                {category.group} / {category.name}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 opacity-60">
+            Undoing this import removes them again, as long as nothing else has been filed
+            under them.
+          </p>
+        </div>
+      )}
 
       {preview.rows.length > 0 && (
         <table className="w-full text-sm">
@@ -227,7 +267,14 @@ function PreviewTable({ preview }: { preview: PasteResult }) {
                 className="border-t border-black/5 dark:border-white/10"
               >
                 <td className="py-1 pr-4">{formatIsoDate(row.date)}</td>
-                <td className="py-1 pr-4">{row.categoryName}</td>
+                <td className="py-1 pr-4">
+                  {row.categoryName}
+                  {row.newCategory && (
+                    <span className="ml-2 rounded bg-black/5 px-1.5 py-0.5 text-xs opacity-70 dark:bg-white/10">
+                      new
+                    </span>
+                  )}
+                </td>
                 <td className="py-1 pr-4 opacity-70">{row.note ?? ""}</td>
                 <td className="py-1 tabular-nums">
                   {formatMoney(row.amount, row.currency)}

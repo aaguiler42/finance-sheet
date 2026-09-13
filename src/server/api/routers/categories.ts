@@ -56,7 +56,7 @@ async function ownedCategory(db: Db, userId: string, id: string) {
 }
 
 export const categoriesRouter = createTRPCRouter({
-  /** The whole vocabulary, archived items included, for managing it in /settings. */
+  /** The whole vocabulary, archived items included, for the Categories modal on /income. */
   tree: protectedProcedure
     .input(z.object({ includeArchived: z.boolean().optional() }).optional())
     .query(async ({ ctx, input }) => {

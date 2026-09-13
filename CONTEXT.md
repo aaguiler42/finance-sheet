@@ -60,7 +60,8 @@ _Avoid_: Parent category, Folder
 
 **Import Batch**:
 One paste of many Incomes, remembered as a unit so a mis-mapped import can be
-undone in a single action rather than row by row.
+undone in a single action rather than row by row. It owns any Category or Group
+the paste had to create to file its rows under — see docs/adr/0005.
 _Avoid_: Upload, Job
 
 ### Money out

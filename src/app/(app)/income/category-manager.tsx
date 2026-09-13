@@ -19,7 +19,7 @@ interface Category {
   archived: boolean;
 }
 
-interface Group {
+export interface Group {
   id: string;
   name: string;
   archived: boolean;
@@ -27,11 +27,14 @@ interface Group {
 }
 
 /**
- * The two-level vocabulary, managed in place.
+ * The two-level vocabulary, managed in place inside the Categories modal.
  *
  * There is no "add a sub-group" anywhere here, and there is not going to be:
  * the hierarchy is exactly two deep so that a group's total is always the plain
  * sum of its categories'.
+ *
+ * Every mutation refreshes the route it is mounted in, so a category added here
+ * is in the Record income dropdown behind it without the modal being closed.
  */
 export function CategoryManager({ groups }: { groups: Group[] }) {
   const router = useRouter();

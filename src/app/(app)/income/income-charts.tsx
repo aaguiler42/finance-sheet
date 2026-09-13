@@ -5,6 +5,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,11 +15,12 @@ import {
 import { panel } from "@/app/(app)/_components/ui";
 import { hueVariable } from "@/lib/chart-palette";
 import { formatMonthShort } from "@/lib/dates";
-import type {
-  CompositionYear,
-  HistoryGroup,
-  MonthlyPoint,
-  YearlyPoint,
+import {
+  type CompositionYear,
+  compositionFloor,
+  type HistorySeries,
+  type MonthlyPoint,
+  type YearlyPoint,
 } from "@/lib/income-periods";
 import { type Currency, formatBase, formatBaseCompact } from "@/lib/money";
 
@@ -42,12 +44,16 @@ export function IncomeCharts({
   yearly,
   composition,
   groups,
+  compositionByCategory,
+  categories,
   displayCurrency,
 }: {
   monthly: MonthlyPoint[];
   yearly: YearlyPoint[];
   composition: CompositionYear[];
-  groups: HistoryGroup[];
+  groups: HistorySeries[];
+  compositionByCategory: CompositionYear[];
+  categories: HistorySeries[];
   displayCurrency: Currency;
 }) {
   return (
@@ -60,6 +66,8 @@ export function IncomeCharts({
       <ByCategory
         composition={composition}
         groups={groups}
+        compositionByCategory={compositionByCategory}
+        categories={categories}
         displayCurrency={displayCurrency}
       />
     </div>
@@ -181,36 +189,84 @@ function IncomeOverTime({
 function ByCategory({
   composition,
   groups,
+  compositionByCategory,
+  categories,
   displayCurrency,
 }: {
   composition: CompositionYear[];
-  groups: HistoryGroup[];
+  groups: HistorySeries[];
+  compositionByCategory: CompositionYear[];
+  categories: HistorySeries[];
   displayCurrency: Currency;
 }) {
-  const data = composition.map((year) => {
+  // Categories by default: a sheet whose columns are Sueldo and Extras is
+  // asking about those, and the group rollup is one click away for the years
+  // where the question is "how much of this was the job".
+  const [level, setLevel] = useState<"category" | "group">("category");
+
+  const series = level === "category" ? categories : groups;
+  const years = level === "category" ? compositionByCategory : composition;
+
+  const data = years.map((year) => {
     const row: Record<string, number | string> = {
       label: String(year.year),
       total: year.total,
     };
     for (const segment of year.segments) {
-      row[`share:${segment.groupId}`] = segment.share;
-      row[`amount:${segment.groupId}`] = segment.amount;
+      row[`share:${segment.seriesId}`] = segment.share;
+      row[`amount:${segment.seriesId}`] = segment.amount;
     }
     return row;
   });
 
+  // The series that earned always stack to 100, so only the floor moves.
+  const floor = compositionFloor(years);
+  // The ticks stay 0-100 even when the floor is below zero: a tick at -5% would
+  // sit a dozen pixels under the 0% one and be dropped as a collision anyway.
+  // The zero line below is what says where the deductions start.
+  const ticks = [0, 25, 50, 75, 100];
+
   return (
     <section className={panel}>
-      <div>
-        <h2 className="text-sm font-medium">By category</h2>
-        <p className="mt-1 text-sm opacity-60">
-          What share of each year came from each group.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-medium">By category</h2>
+          <p className="mt-1 text-sm opacity-60">
+            What share of each year&rsquo;s earnings came from each {level}
+            {floor < 0 ? ", with anything withheld below the line" : ""}.
+          </p>
+        </div>
+
+        <fieldset className="flex overflow-hidden rounded-md border border-black/15 text-sm dark:border-white/20">
+          <legend className="sr-only">What to break down by</legend>
+          {(["category", "group"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={level === option}
+              onClick={() => setLevel(option)}
+              className={`px-3 py-1.5 capitalize ${
+                level === option
+                  ? "bg-foreground text-background"
+                  : "opacity-70 hover:opacity-100"
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </fieldset>
       </div>
 
       <div className="mt-4 h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
+          <BarChart
+            data={data}
+            margin={{ top: 8, right: 8, bottom: 0, left: 8 }}
+            // Diverging rather than cumulative: without it a negative segment is
+            // stacked *after* the positive ones and draws as a band hanging off
+            // the top of the chart instead of below the zero line.
+            stackOffset="sign"
+          >
             <CartesianGrid stroke="currentColor" strokeOpacity={0.08} vertical={false} />
             <XAxis
               dataKey="label"
@@ -224,8 +280,8 @@ function ByCategory({
               tickLine={false}
               axisLine={false}
               width={44}
-              domain={[0, 100]}
-              ticks={[0, 25, 50, 75, 100]}
+              domain={[floor, 100]}
+              ticks={ticks}
               tickFormatter={(value: number) => `${value}%`}
             />
             <Tooltip
@@ -237,7 +293,7 @@ function ByCategory({
                   <div className={tooltipPanel}>
                     <p className="font-medium">{row.label}</p>
                     <ul className="mt-1 flex flex-col gap-0.5">
-                      {groups.map((group) => {
+                      {series.map((group) => {
                         const amount = Number(row[`amount:${group.id}`] ?? 0);
                         const share = Number(row[`share:${group.id}`] ?? 0);
                         if (amount === 0) return null;
@@ -251,8 +307,14 @@ function ByCategory({
                             <span className="w-10 text-right tabular-nums opacity-60">
                               {/* A group that earned something is never "0%":
                                   a figure and a zero beside it read as a
-                                  contradiction. */}
-                              {share < 0.5 ? "<1%" : `${share.toFixed(0)}%`}
+                                  contradiction. The sign is kept outside the
+                                  rounding so a small deduction does not read
+                                  as a small earning. */}
+                              {`${share < 0 ? "-" : ""}${
+                                Math.abs(share) < 0.5
+                                  ? "<1%"
+                                  : `${Math.abs(share).toFixed(0)}%`
+                              }`}
                             </span>
                           </li>
                         );
@@ -265,7 +327,10 @@ function ByCategory({
                 );
               }}
             />
-            {groups.map((group) => (
+            {floor < 0 && (
+              <ReferenceLine y={0} stroke="currentColor" strokeOpacity={0.35} />
+            )}
+            {series.map((group) => (
               <Bar
                 key={group.id}
                 dataKey={`share:${group.id}`}
@@ -279,7 +344,7 @@ function ByCategory({
       </div>
 
       <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {groups.map((group) => (
+        {series.map((group) => (
           <li key={group.id} className="flex items-center gap-2">
             <Swatch hue={group.hue} />
             <span className="opacity-70">{group.name}</span>

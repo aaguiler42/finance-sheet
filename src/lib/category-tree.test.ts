@@ -4,9 +4,12 @@ import {
   buildCategoryTree,
   type CategoryGroupRow,
   type CategoryRow,
+  DEFAULT_IMPORT_GROUP,
+  matchCategoryName,
   qualifiedName,
   resolveCategoryName,
   selectableCategories,
+  splitQualifiedName,
 } from "./category-tree";
 
 const employment: CategoryGroupRow = {
@@ -228,5 +231,100 @@ describe("resolving a pasted category name", () => {
 
   it("does not resolve a group's own name to a category", () => {
     expect(resolveCategoryName(groups, categories, "Employment")).toBeNull();
+  });
+});
+
+describe("splitting a qualified name", () => {
+  it("splits on the separator between a group and a category", () => {
+    expect(splitQualifiedName("Employment / Salary")).toEqual({
+      group: "Employment",
+      name: "Salary",
+    });
+  });
+
+  it("leaves a bare name alone", () => {
+    expect(splitQualifiedName("Salary")).toEqual({ group: null, name: "Salary" });
+  });
+
+  it("does not split when one half is missing", () => {
+    // Otherwise a trailing slash would ask for a category with no name.
+    expect(splitQualifiedName("Employment /")).toEqual({
+      group: null,
+      name: "Employment /",
+    });
+    expect(splitQualifiedName("/ Salary")).toEqual({ group: null, name: "/ Salary" });
+  });
+});
+
+describe("matching a pasted category name", () => {
+  it("finds one that exists, however it is written", () => {
+    expect(matchCategoryName(groups, categories, "  salary ")).toEqual({
+      kind: "existing",
+      id: "c-salary",
+    });
+    expect(matchCategoryName(groups, categories, "Employment / Salary")).toEqual({
+      kind: "existing",
+      id: "c-salary",
+    });
+  });
+
+  it("asks for a missing name to be created, in the group it names", () => {
+    expect(matchCategoryName(groups, categories, "Trabajo / Sueldo")).toEqual({
+      kind: "new",
+      group: "Trabajo",
+      name: "Sueldo",
+    });
+  });
+
+  it("puts a bare name in the default group", () => {
+    expect(matchCategoryName(groups, categories, "Sueldo")).toEqual({
+      kind: "new",
+      group: DEFAULT_IMPORT_GROUP,
+      name: "Sueldo",
+    });
+  });
+
+  it("creates a category under an existing group it does not have yet", () => {
+    expect(matchCategoryName(groups, categories, "Employment / Sueldo")).toEqual({
+      kind: "new",
+      group: "Employment",
+      name: "Sueldo",
+    });
+  });
+
+  it("refuses a bare name two groups claim rather than adding a third", () => {
+    const duplicate: CategoryRow = {
+      id: "c-other-bonus",
+      groupId: "g-investments",
+      name: "Bonus",
+      archived: false,
+    };
+    const withDuplicate = [...categories, duplicate];
+
+    expect(matchCategoryName(groups, withDuplicate, "Bonus")).toEqual({
+      kind: "ambiguous",
+    });
+    // Qualifying it says which was meant, and creates nothing.
+    expect(matchCategoryName(groups, withDuplicate, "Investments / Bonus")).toEqual({
+      kind: "existing",
+      id: "c-other-bonus",
+    });
+  });
+
+  it("reuses an archived category rather than creating a live twin", () => {
+    // A backfill mentions labels that have since been retired; that is not a
+    // reason to end up with two categories called RSUs.
+    expect(matchCategoryName(groups, categories, "RSUs")).toEqual({
+      kind: "existing",
+      id: "c-rsus",
+    });
+  });
+
+  it("does not treat a group's own name as a category that exists", () => {
+    expect(matchCategoryName(groups, categories, "Employment")).toEqual({
+      kind: "new",
+      group: DEFAULT_IMPORT_GROUP,
+      name: "Employment",
+    });
   });
 });
